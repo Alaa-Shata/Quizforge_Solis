@@ -14,7 +14,7 @@
    - Progress tracking
    - Demo countdown
    - Timeout
-   - Abandon confirmation
+   - Custom abandon confirmation dialog
    - Finished screen
 
    Production scoring, adaptive difficulty and persistence
@@ -35,6 +35,11 @@ const setupLayout = document.querySelector(".setup-layout");
 const quizSection = document.querySelector(".quiz-section");
 const quizHeading = document.querySelector(".quiz-heading");
 
+// Custom Exit Dialog
+const confirmModal = document.getElementById("confirm-modal");
+const modalCancel = document.getElementById("modal-cancel");
+const modalOk = document.getElementById("modal-ok");
+
 
 /* ================= SESSION CONFIGURATION ================= */
 
@@ -42,7 +47,7 @@ const session = {
     learnerName: "",
     selectedTopics: [],
     questionCount: 5,
-    timeLimitSeconds: 0
+    timeLimitSeconds: 600
 };
 
 let availableTopics = [];
@@ -592,7 +597,7 @@ function renderQuizStage() {
                 <span id="question-topic">TOPIC</span>
 
                 <div id="timer-display" class="timer-display">
-                    Unlimited
+                    10:00
                 </div>
 
             </div>
@@ -1056,21 +1061,53 @@ function updateTimerDisplay() {
 }
 
 
-/* ================= ABANDON QUIZ ================= */
+/* ================= CUSTOM ABANDON DIALOG ================= */
 
 function abandonQuiz() {
 
     if (quizStatus !== "ACTIVE") return;
 
-    const confirmed = window.confirm(
-        "Are you sure you want to exit this quiz?\nYour current attempt will be abandoned."
-    );
-
-    if (!confirmed) {
+    if (!confirmModal) {
+        console.error("Custom confirmation dialog was not found.");
         return;
     }
 
-    finishQuiz("ABANDONED");
+    confirmModal.hidden = false;
+
+}
+
+
+function closeConfirmDialog() {
+
+    if (confirmModal) {
+        confirmModal.hidden = true;
+    }
+
+}
+
+
+// Keep Going button
+if (modalCancel) {
+
+    modalCancel.addEventListener("click", () => {
+
+        closeConfirmDialog();
+
+    });
+
+}
+
+
+// Leave Quiz button
+if (modalOk) {
+
+    modalOk.addEventListener("click", () => {
+
+        closeConfirmDialog();
+
+        finishQuiz("ABANDONED");
+
+    });
 
 }
 
@@ -1084,6 +1121,8 @@ function finishQuiz(status) {
     quizStatus = "FINISHED";
 
     stopTimer();
+
+    closeConfirmDialog();
 
     const totalQuestions = quizQuestions.length;
 
@@ -1200,6 +1239,8 @@ function finishQuiz(status) {
 function returnToSetup() {
 
     stopTimer();
+
+    closeConfirmDialog();
 
     quizStatus = "SETUP";
 
