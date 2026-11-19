@@ -6,7 +6,11 @@ from database.connection import get_connection
 
 class AttemptRepository:
 
-    VALID_STATUSES = {"COMPLETED", "TIMED_OUT", "ABANDONED"}
+    VALID_STATUSES = {
+        "COMPLETED",
+        "TIMED_OUT",
+        "ABANDONED"
+    }
 
     @staticmethod
     def save_attempt(
@@ -30,15 +34,39 @@ class AttemptRepository:
             raise ValueError("Learner name cannot be empty.")
 
         if not 5 <= question_count <= 30:
-            raise ValueError("Question count must be between 5 and 30.")
+            raise ValueError(
+                "Question count must be between 5 and 30."
+            )
 
         if earned_points < 0 or max_points < 0:
             raise ValueError("Points cannot be negative.")
 
+        if earned_points > max_points:
+            raise ValueError(
+                "Earned points cannot exceed maximum points."
+            )
+
+        if max_points != question_count:
+            raise ValueError(
+                "Maximum points must equal question count."
+            )
+
+        if len(answers) > question_count:
+            raise ValueError(
+                "Answered questions cannot exceed question count."
+            )
+
+        if status == "COMPLETED" and len(answers) != question_count:
+            raise ValueError(
+                "A completed attempt must contain all answers."
+            )
+
         conn = get_connection(db_path)
 
         try:
+
             cursor = conn.cursor()
+
             cursor.execute("BEGIN")
 
             cursor.execute(
@@ -68,6 +96,7 @@ class AttemptRepository:
             attempt_id = cursor.lastrowid
 
             answer_data = [
+
                 (
                     attempt_id,
                     answer.question_id,
@@ -76,30 +105,38 @@ class AttemptRepository:
                     answer.chosen_option,
                     int(answer.is_correct)
                 )
+
                 for answer in answers
+
             ]
 
-            cursor.executemany(
-                """
-                INSERT INTO attempt_answers (
-                    attempt_id,
-                    question_id,
-                    order_no,
-                    level_asked,
-                    chosen_option,
-                    is_correct
+            if answer_data:
+
+                cursor.executemany(
+                    """
+                    INSERT INTO attempt_answers (
+                        attempt_id,
+                        question_id,
+                        order_no,
+                        level_asked,
+                        chosen_option,
+                        is_correct
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    answer_data
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                answer_data
-            )
 
             conn.commit()
+
             return attempt_id
 
         except Exception:
+
             conn.rollback()
+
             raise
 
         finally:
+
             conn.close()
