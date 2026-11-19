@@ -1,6 +1,17 @@
-data/*.db
-data/*.db-journal
-__pycache__/
+# Virtual Environment
+venv/
 .venv/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+
+# Testing
 .pytest_cache/
-.vs/
+
+# Environment Variables
+.env
+
+# IDE
+.vscode/
+.idea/
