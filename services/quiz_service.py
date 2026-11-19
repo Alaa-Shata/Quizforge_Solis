@@ -88,6 +88,11 @@ class QuizService:
         if not config.learner_name.strip():
             raise ValueError("Please enter your name.")
 
+        if len(config.learner_name.strip()) < 2:
+
+            raise ValueError("Name must be at least 2 characters.")
+
+
         if len(config.learner_name.strip()) > 40:
             raise ValueError("Name cannot exceed 40 characters.")
 
@@ -99,8 +104,8 @@ class QuizService:
                 "Question count must be between 5 and 30."
             )
 
-        if config.time_limit_seconds < 0:
-            raise ValueError("Time limit cannot be negative.")
+        if config.time_limit_seconds <= 0:
+            raise ValueError("Time limit must be greater than zero.")
 
     # ======================================
     # START QUIZ
