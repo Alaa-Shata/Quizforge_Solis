@@ -381,57 +381,92 @@ QUESTION_BANK = {
 }
 
 
+def _normalize_text(text: str) -> str:
+    return " ".join(text.strip().split()).lower()
+
+
 def seed_database():
     conn = get_connection()
 
     try:
         with conn:
-            total = 0
+            inserted_count = 0
+            synced_existing_count = 0
 
             for topic_name, questions in QUESTION_BANK.items():
-
+                conn.execute(
+                    "INSERT OR IGNORE INTO topics (name) VALUES (?)",
+                    (topic_name,)
+                )
                 row = conn.execute(
                     "SELECT id FROM topics WHERE name = ?",
                     (topic_name,)
                 ).fetchone()
 
                 if row is None:
-                    raise ValueError(f"Topic not found: {topic_name}")
+                    raise ValueError(f"Topic not found or could not be created: {topic_name}")
 
                 topic_id = row["id"]
 
-                # Keep previous attempts and their question references.
-                conn.execute(
-                    "UPDATE questions SET is_active = 0 WHERE topic_id = ?",
-                    (topic_id,)
-                )
-
                 for difficulty, question, options, correct, explanation in questions:
-
-                    conn.execute(
+                    normalized_q = _normalize_text(question)
+                    existing = conn.execute(
                         """
-                        INSERT INTO questions
-                        (topic_id, text, option_a, option_b, option_c,
-                         option_d, correct_option, difficulty,
-                         explanation, is_active)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        SELECT id FROM questions
+                        WHERE topic_id = ? AND lower(trim(text)) = ?
                         """,
-                        (
-                            topic_id,
-                            question,
-                            options[0],
-                            options[1],
-                            options[2],
-                            options[3],
-                            correct,
-                            difficulty,
-                            explanation
+                        (topic_id, normalized_q)
+                    ).fetchone()
+
+                    if existing is not None:
+                        conn.execute(
+                            """
+                            UPDATE questions
+                            SET text = ?, option_a = ?, option_b = ?, option_c = ?,
+                                option_d = ?, correct_option = ?, difficulty = ?,
+                                explanation = ?, is_active = 1
+                            WHERE id = ?
+                            """,
+                            (
+                                question,
+                                options[0],
+                                options[1],
+                                options[2],
+                                options[3],
+                                correct,
+                                difficulty,
+                                explanation,
+                                existing["id"],
+                            )
                         )
-                    )
+                        synced_existing_count += 1
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO questions
+                            (topic_id, text, option_a, option_b, option_c,
+                             option_d, correct_option, difficulty,
+                             explanation, is_active)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                            """,
+                            (
+                                topic_id,
+                                question,
+                                options[0],
+                                options[1],
+                                options[2],
+                                options[3],
+                                correct,
+                                difficulty,
+                                explanation,
+                            )
+                        )
+                        inserted_count += 1
 
-                    total += 1
-
-            print(f"Successfully inserted {total} real questions.")
+            print(
+                f"Seed completed safely: {inserted_count} inserted, "
+                f"{synced_existing_count} existing synced without duplicates."
+            )
 
     finally:
         conn.close()
