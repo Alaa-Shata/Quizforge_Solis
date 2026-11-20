@@ -348,9 +348,7 @@ class QuizService:
     def _finish(self, status):
 
         if self.is_finished:
-            raise RuntimeError(
-                "Quiz session has already finished."
-            )
+            return self.result
 
         if not self.is_active:
             raise RuntimeError(
@@ -359,6 +357,43 @@ class QuizService:
 
         if status not in self.VALID_STATUSES:
             raise ValueError("Invalid quiz status.")
+
+        existing_ids = {
+            answer.question_id for answer in self.answers
+        }
+
+        if status == "TIMED_OUT":
+            # Record remaining questions as unanswered.
+            for index, question in enumerate(self.questions):
+                if question.id not in existing_ids:
+                    self.answers.append(
+                        AnswerRecord(
+                            question_id=question.id,
+                            order_no=index + 1,
+                            level_asked=int(
+                                getattr(question, "difficulty", 2)
+                            ),
+                            chosen_option=None,
+                            is_correct=False
+                        )
+                    )
+
+        elif status == "ABANDONED":
+            # Record only the current unanswered question.
+            if self.current_question_index < len(self.questions):
+                question = self.questions[self.current_question_index]
+                if question.id not in existing_ids:
+                    self.answers.append(
+                        AnswerRecord(
+                            question_id=question.id,
+                            order_no=self.current_question_index + 1,
+                            level_asked=int(
+                                getattr(question, "difficulty", 2)
+                            ),
+                            chosen_option=None,
+                            is_correct=False
+                        )
+                    )
 
         self.finished_at = datetime.now()
 
@@ -371,13 +406,9 @@ class QuizService:
         max_points = len(self.questions)
 
         score_percent = (
-
             earned_points / max_points * 100
-
             if max_points > 0
-
             else 0
-
         )
 
         self.result = QuizResult(

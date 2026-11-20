@@ -404,12 +404,22 @@ class QuizSessionController(QObject):
 
             "total_questions": len(self.service.questions),
 
-            "answered_questions": len(result.answers),
+            "answered_questions": sum(
+                1 for answer in result.answers
+                if answer.chosen_option is not None
+            ),
 
-            "correct_answers": result.earned_points,
+            "correct_answers": sum(
+                1 for answer in result.answers
+                if answer.is_correct
+            ),
 
             "unanswered_questions": (
-                len(self.service.questions) - len(result.answers)
+                len(self.service.questions)
+                - sum(
+                    1 for answer in result.answers
+                    if answer.chosen_option is not None
+                )
             ),
 
             "earned_points": result.earned_points,

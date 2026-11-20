@@ -234,6 +234,10 @@ def test_timed_out_quiz_is_saved_to_database(test_db):
     attempt, answers = read_attempt(db_path)
 
     assert attempt["status"] == "TIMED_OUT"
-    assert len(answers) == 1
+    assert len(answers) == 5
+    assert sum(
+        1 for answer in answers
+        if answer["chosen_option"] is None
+    ) == 4
 
     controller.timer.stop()
