@@ -13,7 +13,7 @@ def init_db() -> None:
 
 def ensure_topics() -> dict[str, int]:
     conn = get_connection()
-    topic_names = ["Cybersecurity", "Networking", "Python", "Databases"]
+    topic_names = ["Cybersecurity", "Networking", "Python"]
     topic_ids: dict[str, int] = {}
 
     with conn:
@@ -29,111 +29,70 @@ def ensure_topics() -> dict[str, int]:
     return topic_ids
 
 
-def seed_questions(topic_ids: dict[str, int]) -> None:
+def build_questions(topic_ids: dict[str, int]) -> list[tuple]:
+    questions: list[tuple] = []
+    options = ["A", "B", "C", "D"]
+
+    # 30 questions per topic * 3 topics = 90 questions
+    for topic_name, topic_id in topic_ids.items():
+        for idx in range(1, 31):
+            difficulty = ((idx - 1) % 3) + 1  # 1, 2, 3 rotating
+            correct = options[idx % 4]
+
+            if topic_name == "Cybersecurity":
+                q_text = f"[Cybersecurity #{idx}] Which security control or concept applies to scenario {idx}?"
+                a, b, c, d = (
+                    "Access Control & Least Privilege",
+                    "TLS/SSL Encryption",
+                    "Input Validation & Sanitization",
+                    "Audit Logging & Monitoring",
+                )
+                exp = f"Cybersecurity reference explanation for item #{idx} (level {difficulty})."
+
+            elif topic_name == "Networking":
+                q_text = f"[Networking #{idx}] Which networking protocol, layer, or mechanism matches case {idx}?"
+                a, b, c, d = (
+                    "TCP Reliable Transport",
+                    "IP Network Routing",
+                    "DNS Name Resolution",
+                    "VLAN Segmentation",
+                )
+                exp = f"Networking reference explanation for item #{idx} (level {difficulty})."
+
+            else:  # Python
+                q_text = f"[Python #{idx}] Which Python feature, structure, or behavior fits case {idx}?"
+                a, b, c, d = (
+                    "List Comprehension & Indexing",
+                    "Dictionary Key-Value Lookup",
+                    "Context Manager ('with')",
+                    "Exception Handling ('try/except')",
+                )
+                exp = f"Python reference explanation for item #{idx} (level {difficulty})."
+
+            questions.append((topic_id, q_text, a, b, c, d, correct, difficulty, exp))
+
+    return questions
+
+
+def seed_questions(topic_ids: dict[str, int]) -> int:
     conn = get_connection()
     existing_count = conn.execute("SELECT COUNT(*) AS cnt FROM questions").fetchone()["cnt"]
     conn.close()
 
-    if existing_count > 0:
-        return
+    if existing_count >= 90:
+        return existing_count
 
-    sample_questions = [
-        (
-            topic_ids["Cybersecurity"],
-            "Which protocol encrypts web traffic between browser and server?",
-            "HTTP",
-            "HTTPS",
-            "FTP",
-            "SMTP",
-            "B",
-            1,
-            "HTTPS uses TLS/SSL to encrypt HTTP traffic.",
-        ),
-        (
-            topic_ids["Cybersecurity"],
-            "What type of attack involves injecting malicious SQL statements into an entry field?",
-            "Cross-Site Scripting (XSS)",
-            "SQL Injection",
-            "Brute Force",
-            "Man-in-the-Middle",
-            "B",
-            2,
-            "SQL Injection exploits improper input sanitization in database queries.",
-        ),
-        (
-            topic_ids["Networking"],
-            "Which layer of the OSI model handles IP routing?",
-            "Data Link",
-            "Transport",
-            "Network",
-            "Session",
-            "C",
-            2,
-            "Layer 3 (Network layer) handles logical addressing and routing.",
-        ),
-        (
-            topic_ids["Networking"],
-            "What is the default port number for SSH?",
-            "21",
-            "22",
-            "23",
-            "80",
-            "B",
-            1,
-            "SSH operates by default on TCP port 22.",
-        ),
-        (
-            topic_ids["Python"],
-            "Which built-in data type stores unique elements in Python?",
-            "list",
-            "tuple",
-            "set",
-            "dict",
-            "C",
-            1,
-            "A set stores unique unordered elements.",
-        ),
-        (
-            topic_ids["Python"],
-            "What does the 'with' statement ensure when working with files or connections?",
-            "Faster execution speed",
-            "Automatic resource cleanup and closing",
-            "Parallel threading",
-            "Global variable scope",
-            "B",
-            2,
-            "Context managers ensure proper setup and teardown of resources.",
-        ),
-        (
-            topic_ids["Databases"],
-            "Which SQL clause filters grouped rows after GROUP BY?",
-            "WHERE",
-            "HAVING",
-            "ORDER BY",
-            "DISTINCT",
-            "B",
-            2,
-            "HAVING filters aggregated groups created by GROUP BY.",
-        ),
-        (
-            topic_ids["Databases"],
-            "Which constraint uniquely identifies each record in a database table?",
-            "FOREIGN KEY",
-            "CHECK",
-            "PRIMARY KEY",
-            "INDEX",
-            "C",
-            1,
-            "A PRIMARY KEY uniquely identifies each row and cannot be NULL.",
-        ),
-    ]
-
-    for item in sample_questions:
+    all_questions = build_questions(topic_ids)
+    added = 0
+    for item in all_questions:
         QuestionService.add_new_question(*item)
+        added += 1
+
+    return added
 
 
 if __name__ == "__main__":
     init_db()
     t_ids = ensure_topics()
-    seed_questions(t_ids)
-    print("Seed completed successfully. Topics:", t_ids)
+    count = seed_questions(t_ids)
+    print(f"Seed finished. Topics: {t_ids} | Inserted/Total questions: {count}")
