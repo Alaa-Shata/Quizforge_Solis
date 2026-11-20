@@ -6,11 +6,7 @@ from database.connection import get_connection
 
 class AttemptRepository:
 
-    VALID_STATUSES = {
-        "COMPLETED",
-        "TIMED_OUT",
-        "ABANDONED"
-    }
+    VALID_STATUSES = {"COMPLETED", "TIMED_OUT", "ABANDONED"}
 
     @staticmethod
     def save_attempt(
@@ -34,69 +30,54 @@ class AttemptRepository:
             raise ValueError("Learner name cannot be empty.")
 
         if not 5 <= question_count <= 30:
-            raise ValueError(
-                "Question count must be between 5 and 30."
-            )
+            raise ValueError("Question count must be between 5 and 30.")
 
         if earned_points < 0 or max_points < 0:
             raise ValueError("Points cannot be negative.")
 
         if earned_points > max_points:
-            raise ValueError(
-                "Earned points cannot exceed maximum points."
-            )
-
-        if max_points != question_count:
-            raise ValueError(
-                "Maximum points must equal question count."
-            )
+            raise ValueError("Earned points cannot exceed maximum points.")
 
         if len(answers) > question_count:
-            raise ValueError(
-                "Answered questions cannot exceed question count."
-            )
+            raise ValueError("Answered questions cannot exceed question count.")
 
         if status == "COMPLETED" and len(answers) != question_count:
-            raise ValueError(
-                "A completed attempt must contain all answers."
-            )
+            raise ValueError("A completed attempt must contain all answers.")
+
+        expected_maximum = sum(int(a.level_asked) for a in answers)
+        expected_earned = sum(
+            int(a.level_asked) for a in answers if a.is_correct
+        )
+
+        if max_points != expected_maximum:
+            raise ValueError("Maximum points do not match the presented questions.")
+
+        if earned_points != expected_earned:
+            raise ValueError("Earned points do not match the submitted answers.")
 
         conn = get_connection(db_path)
 
         try:
-
             cursor = conn.cursor()
-
             cursor.execute("BEGIN")
 
             cursor.execute(
                 """
                 INSERT INTO attempts (
-                    learner_name,
-                    started_at,
-                    finished_at,
-                    status,
-                    question_count,
-                    earned_points,
-                    max_points
+                    learner_name, started_at, finished_at, status,
+                    question_count, earned_points, max_points
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    learner_name.strip(),
-                    started_at,
-                    finished_at,
-                    status,
-                    question_count,
-                    earned_points,
-                    max_points
+                    learner_name.strip(), started_at, finished_at, status,
+                    question_count, earned_points, max_points
                 )
             )
 
             attempt_id = cursor.lastrowid
 
             answer_data = [
-
                 (
                     attempt_id,
                     answer.question_id,
@@ -105,22 +86,15 @@ class AttemptRepository:
                     answer.chosen_option,
                     int(answer.is_correct)
                 )
-
                 for answer in answers
-
             ]
 
             if answer_data:
-
                 cursor.executemany(
                     """
                     INSERT INTO attempt_answers (
-                        attempt_id,
-                        question_id,
-                        order_no,
-                        level_asked,
-                        chosen_option,
-                        is_correct
+                        attempt_id, question_id, order_no,
+                        level_asked, chosen_option, is_correct
                     )
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
@@ -128,15 +102,11 @@ class AttemptRepository:
                 )
 
             conn.commit()
-
             return attempt_id
 
         except Exception:
-
             conn.rollback()
-
             raise
 
         finally:
-
             conn.close()
