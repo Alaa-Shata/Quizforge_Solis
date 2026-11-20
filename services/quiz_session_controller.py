@@ -5,7 +5,7 @@ from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 from services.quiz_service import QuizService, QuizConfig
 from repositories.question_repository import QuestionRepository
-from repositories.topic_repository import TopicRepository
+from database.connection import get_connection
 from database.repositories.attempt_repository import AttemptRepository
 
 
@@ -23,6 +23,9 @@ class QuizSessionController(QObject):
         super().__init__(parent)
 
         self.db_path = db_path
+        self.question_repository = QuestionRepository(
+            lambda: get_connection(self.db_path)
+        )
         self.service = QuizService()
         self.question_count = 0
         self.attempt_saved = False
@@ -35,7 +38,10 @@ class QuizSessionController(QObject):
     @Slot()
     def loadTopics(self):
         try:
-            topics = TopicRepository.get_all_topics(self.db_path)
+            topics = [
+                {"id": topic_id, "name": name}
+                for topic_id, name in self.question_repository.list_topics()
+            ]
             self.topicsReady.emit(json.dumps(topics))
         except Exception as error:
             self.errorOccurred.emit(str(error))
@@ -68,8 +74,8 @@ class QuizSessionController(QObject):
 
             for topic_id in config.topic_ids:
                 questions.extend(
-                    QuestionRepository.get_questions_by_topic(
-                        topic_id, self.db_path
+                    self.question_repository.list_questions(
+                        topic_id=topic_id, active_only=True
                     )
                 )
 
@@ -101,7 +107,10 @@ class QuizSessionController(QObject):
             self.errorOccurred.emit(str(error))
 
     def _serialize_question(self, question):
-        topics = TopicRepository.get_all_topics(self.db_path)
+        topics = [
+            {"id": topic_id, "name": name}
+            for topic_id, name in self.question_repository.list_topics()
+        ]
 
         topic = next(
             (item for item in topics if item["id"] == question.topic_id),
