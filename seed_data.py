@@ -1,4 +1,4 @@
-import sqlite3
+import re
 from database.connection import get_connection
 
 
@@ -381,8 +381,9 @@ QUESTION_BANK = {
 }
 
 
-def _normalize_text(text: str) -> str:
-    return " ".join(text.strip().split()).lower()
+def _normalize_whitespace_and_case(text: str) -> str:
+    """Collapse all internal/leading/trailing whitespace into single spaces and lowercase."""
+    return re.sub(r"\s+", " ", text.strip()).lower()
 
 
 def seed_database():
@@ -391,81 +392,76 @@ def seed_database():
     try:
         with conn:
             inserted_count = 0
-            synced_existing_count = 0
+            skipped_count = 0
+
+            existing_topics = conn.execute("SELECT id, name FROM topics").fetchall()
+            topic_lookup = {
+                _normalize_whitespace_and_case(row["name"]): row["id"]
+                for row in existing_topics
+            }
 
             for topic_name, questions in QUESTION_BANK.items():
-                conn.execute(
-                    "INSERT OR IGNORE INTO topics (name) VALUES (?)",
-                    (topic_name,)
-                )
-                row = conn.execute(
-                    "SELECT id FROM topics WHERE name = ?",
-                    (topic_name,)
-                ).fetchone()
+                norm_topic = _normalize_whitespace_and_case(topic_name)
 
-                if row is None:
-                    raise ValueError(f"Topic not found or could not be created: {topic_name}")
+                if norm_topic in topic_lookup:
+                    topic_id = topic_lookup[norm_topic]
+                else:
+                    conn.execute(
+                        "INSERT INTO topics (name) VALUES (?)",
+                        (topic_name,)
+                    )
+                    row = conn.execute(
+                        "SELECT id FROM topics WHERE lower(trim(name)) = ?",
+                        (norm_topic,)
+                    ).fetchone()
+                    if row is None:
+                        raise ValueError(f"Topic not found or could not be created: {topic_name}")
+                    topic_id = row["id"]
+                    topic_lookup[norm_topic] = topic_id
 
-                topic_id = row["id"]
+                existing_questions = conn.execute(
+                    "SELECT text FROM questions WHERE topic_id = ?",
+                    (topic_id,)
+                ).fetchall()
+                seen_normalized_texts = {
+                    _normalize_whitespace_and_case(q["text"])
+                    for q in existing_questions
+                }
 
                 for difficulty, question, options, correct, explanation in questions:
-                    normalized_q = _normalize_text(question)
-                    existing = conn.execute(
-                        """
-                        SELECT id FROM questions
-                        WHERE topic_id = ? AND lower(trim(text)) = ?
-                        """,
-                        (topic_id, normalized_q)
-                    ).fetchone()
+                    norm_q = _normalize_whitespace_and_case(question)
 
-                    if existing is not None:
-                        conn.execute(
-                            """
-                            UPDATE questions
-                            SET text = ?, option_a = ?, option_b = ?, option_c = ?,
-                                option_d = ?, correct_option = ?, difficulty = ?,
-                                explanation = ?, is_active = 1
-                            WHERE id = ?
-                            """,
-                            (
-                                question,
-                                options[0],
-                                options[1],
-                                options[2],
-                                options[3],
-                                correct,
-                                difficulty,
-                                explanation,
-                                existing["id"],
-                            )
+                    # Skip existing questions so historical attempt answers/explanations stay intact.
+                    if norm_q in seen_normalized_texts:
+                        skipped_count += 1
+                        continue
+
+                    conn.execute(
+                        """
+                        INSERT INTO questions
+                        (topic_id, text, option_a, option_b, option_c,
+                         option_d, correct_option, difficulty,
+                         explanation, is_active)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        """,
+                        (
+                            topic_id,
+                            question,
+                            options[0],
+                            options[1],
+                            options[2],
+                            options[3],
+                            correct,
+                            difficulty,
+                            explanation,
                         )
-                        synced_existing_count += 1
-                    else:
-                        conn.execute(
-                            """
-                            INSERT INTO questions
-                            (topic_id, text, option_a, option_b, option_c,
-                             option_d, correct_option, difficulty,
-                             explanation, is_active)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                            """,
-                            (
-                                topic_id,
-                                question,
-                                options[0],
-                                options[1],
-                                options[2],
-                                options[3],
-                                correct,
-                                difficulty,
-                                explanation,
-                            )
-                        )
-                        inserted_count += 1
+                    )
+                    seen_normalized_texts.add(norm_q)
+                    inserted_count += 1
 
             print(
-                f"Seed completed safely: {inserted_count} inserted, "
-                f"{synced_existing_count} existing synced without duplicates."
+                f"Seed completed: {inserted_count} inserted, "
+                f"{skipped_count} existing skipped safely."
             )
 
     finally:
