@@ -34,6 +34,7 @@ class QuizSessionController(QObject):
         self.question_count = 0
 
         self.attempt_saved = False
+        self.pending_result = None
 
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
@@ -69,6 +70,11 @@ class QuizSessionController(QObject):
     def startQuiz(self, config_json):
 
         try:
+            if self.pending_result is not None and not self.attempt_saved:
+                raise RuntimeError(
+                    "Please retry saving the previous quiz result first."
+                )
+
 
             config_data = json.loads(config_json)
 
@@ -125,6 +131,7 @@ class QuizSessionController(QObject):
             self.question_count = config.question_count
 
             self.attempt_saved = False
+            self.pending_result = None
 
             first_question = self.service.start(
                 config,
@@ -346,74 +353,65 @@ class QuizSessionController(QObject):
     # SAVE RESULT
     # ======================================
 
+    @Slot()
+    def retrySave(self):
+        """Retry saving a finished result that is still in memory."""
+
+        if self.attempt_saved:
+            return
+
+        if self.pending_result is None:
+            self.errorOccurred.emit("There is no pending result to save.")
+            return
+
+        self._save_and_emit(self.pending_result)
+
     def _save_and_emit(self, result):
 
         if self.attempt_saved:
             return
 
+        self.pending_result = result
         self.timer.stop()
 
         config = self.service.config
 
-        attempt_id = None
-        save_error = None
-
         try:
-
             attempt_id = AttemptRepository.save_attempt(
-
                 learner_name=config.learner_name,
-
                 started_at=self.service.started_at.isoformat(),
-
                 finished_at=self.service.finished_at.isoformat(),
-
                 status=result.status,
-
                 question_count=len(self.service.questions),
-
                 earned_points=result.earned_points,
-
                 max_points=result.max_points,
-
                 answers=result.answers,
-
                 db_path=self.db_path
-
             )
-
-            # Mark as saved only after successful database persistence.
-            self.attempt_saved = True
 
         except Exception as error:
-
-            save_error = str(error)
-
-            print(
-                "Attempt persistence failed:",
-                save_error
+            self.errorOccurred.emit(
+                "Could not save quiz result. Please retry saving. "
+                + str(error)
             )
+            return
+
+        self.attempt_saved = True
+        self.pending_result = None
 
         payload = {
-
             "status": result.status,
-
             "attempt_id": attempt_id,
-
-            "save_error": save_error,
-
+            "save_error": None,
             "total_questions": len(self.service.questions),
-
             "answered_questions": sum(
                 1 for answer in result.answers
                 if answer.chosen_option is not None
             ),
-
             "correct_answers": sum(
                 1 for answer in result.answers
                 if answer.is_correct
             ),
-
             "unanswered_questions": (
                 len(self.service.questions)
                 - sum(
@@ -421,15 +419,9 @@ class QuizSessionController(QObject):
                     if answer.chosen_option is not None
                 )
             ),
-
             "earned_points": result.earned_points,
-
             "max_points": result.max_points,
-
             "score_percent": result.score_percent
-
         }
 
-        self.sessionFinished.emit(
-            json.dumps(payload)
-        )
+        self.sessionFinished.emit(json.dumps(payload))

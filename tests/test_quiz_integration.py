@@ -241,3 +241,64 @@ def test_timed_out_quiz_is_saved_to_database(test_db):
     ) == 4
 
     controller.timer.stop()
+
+def test_database_save_failure_can_be_retried(test_db, monkeypatch):
+    db_path, topic_id = test_db
+    controller = create_controller(db_path)
+
+    received = []
+    errors = []
+
+    controller.sessionFinished.connect(received.append)
+    controller.errorOccurred.connect(errors.append)
+
+    from services.quiz_session_controller import AttemptRepository
+
+    original_save = AttemptRepository.save_attempt
+    calls = {"count": 0}
+
+    def fail_once(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("Simulated database failure")
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(AttemptRepository, "save_attempt", fail_once)
+
+    start_quiz(controller, topic_id)
+
+    for _ in range(5):
+        controller.submitAnswer("A")
+        controller.nextQuestion()
+
+    assert received == []
+    assert len(errors) == 1
+    assert controller.attempt_saved is False
+    assert controller.pending_result is not None
+
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+    conn.close()
+
+    controller.retrySave()
+
+    assert len(received) == 1
+    assert controller.attempt_saved is True
+    assert controller.pending_result is None
+
+    result = json.loads(received[0])
+    assert result["status"] == "COMPLETED"
+    assert result["attempt_id"] is not None
+    assert result["save_error"] is None
+
+    attempt, answers = read_attempt(db_path)
+    assert attempt["status"] == "COMPLETED"
+    assert len(answers) == 5
+
+    controller.retrySave()
+
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+    conn.close()
+
+    controller.timer.stop()
