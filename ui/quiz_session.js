@@ -1,4 +1,4 @@
-﻿/* ======================================================
+/* ======================================================
    QUIZFORGE - M2 QUIZ SESSION
 
    Supports:
@@ -273,7 +273,7 @@ function renderTopics() {
 
             <div class="empty-state">
 
-                <span>âœ§</span>
+                <span>✧</span>
 
                 <h4>Topics will appear here</h4>
 
@@ -288,12 +288,12 @@ function renderTopics() {
     }
 
     const icons = [
-        "âœ¦",
-        "â—ˆ",
-        "â—Ž",
-        "âŒ˜",
-        "â—‡",
-        "â–¦"
+        "✦",
+        "◈",
+        "◎",
+        "⌘",
+        "◇",
+        "▦"
     ];
 
     availableTopics.forEach((topic, index) => {
@@ -329,7 +329,7 @@ function renderTopics() {
 
             </span>
 
-            <span class="card-check">âœ“</span>
+            <span class="card-check">✓</span>
 
         `;
 
@@ -832,7 +832,7 @@ function renderQuizStage() {
                     type="button"
                     disabled
                 >
-                    Submit Answer â†’
+                    Submit Answer →
                 </button>
 
                 <button
@@ -841,7 +841,7 @@ function renderQuizStage() {
                     type="button"
                     style="display:none"
                 >
-                    Next Question â†’
+                    Next Question →
                 </button>
 
             </div>
@@ -1231,8 +1231,8 @@ function displayFeedback(feedback) {
 
         nextButton.textContent =
             currentQuestionIndex === session.questionCount - 1
-                ? "Finish Quiz âœ“"
-                : "Next Question â†’";
+                ? "Finish Quiz ✓"
+                : "Next Question →";
 
     }
 
@@ -1259,7 +1259,7 @@ function showFeedback(isCorrect, explanation) {
         <div class="feedback-heading">
 
             <span>
-                ${isCorrect ? "âœ“" : "âœ•"}
+                ${isCorrect ? "✓" : "✕"}
             </span>
 
             <strong>
@@ -1552,7 +1552,7 @@ function renderFinishedScreen(result) {
         <div class="finished-card">
 
             <div class="finished-icon">
-                ${result.status === "COMPLETED" ? "âœ“" : "â—·"}
+                ${result.status === "COMPLETED" ? "✓" : "◷"}
             </div>
 
             <span class="section-tag">
@@ -1622,7 +1622,7 @@ function renderFinishedScreen(result) {
                 class="quiz-action-button"
                 type="button"
             >
-                Back to Setup â†—
+                Back to Setup ↗
             </button>
 
         </div>
