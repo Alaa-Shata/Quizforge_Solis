@@ -1,4 +1,4 @@
-/* ======================================================
+﻿/* ======================================================
    QUIZFORGE - M2 QUIZ SESSION
 
    Supports:
@@ -190,9 +190,7 @@ function connectBackend() {
 
 
             quizBridge.errorOccurred.connect(function (message) {
-
-                showError(message);
-
+                handleBackendError(message);
             });
 
 
@@ -275,7 +273,7 @@ function renderTopics() {
 
             <div class="empty-state">
 
-                <span>✧</span>
+                <span>âœ§</span>
 
                 <h4>Topics will appear here</h4>
 
@@ -290,12 +288,12 @@ function renderTopics() {
     }
 
     const icons = [
-        "✦",
-        "◈",
-        "◎",
-        "⌘",
-        "◇",
-        "▦"
+        "âœ¦",
+        "â—ˆ",
+        "â—Ž",
+        "âŒ˜",
+        "â—‡",
+        "â–¦"
     ];
 
     availableTopics.forEach((topic, index) => {
@@ -331,7 +329,7 @@ function renderTopics() {
 
             </span>
 
-            <span class="card-check">✓</span>
+            <span class="card-check">âœ“</span>
 
         `;
 
@@ -538,6 +536,45 @@ function validateSession() {
 }
 
 
+function handleBackendError(message) {
+
+    if (String(message).toLowerCase().includes("save")) {
+
+        let panel = document.getElementById("retry-save-panel");
+
+        if (!panel) {
+            panel = document.createElement("div");
+            panel.id = "retry-save-panel";
+            panel.className = "finished-note";
+            panel.style.marginTop = "16px";
+            quizStage.appendChild(panel);
+        }
+
+        panel.innerHTML = `
+            <p>${escapeHTML(message)}</p>
+            <button
+                id="retry-save-button"
+                class="quiz-action-button"
+                type="button"
+            >
+                Retry Save
+            </button>
+        `;
+
+        const retryButton = document.getElementById("retry-save-button");
+
+        retryButton.addEventListener("click", function () {
+            retryButton.disabled = true;
+            retryButton.textContent = "Retrying...";
+            quizBridge.retrySave();
+        });
+
+        return;
+    }
+
+    showError(message);
+}
+
 function showError(message) {
 
     if (!errorBox) {
@@ -569,21 +606,15 @@ function clearError() {
 /* ================= MOCK QUESTION RETRIEVAL ================= */
 
 function getEligibleQuestions(topicIds) {
-
-    if (
-        !window.QUIZ_MOCK_DATA ||
-        !Array.isArray(window.QUIZ_MOCK_DATA.questions)
-    ) {
-
-        return [];
-
+    if (!window.QUIZ_MOCK_DATA || !Array.isArray(window.QUIZ_MOCK_DATA.questions)) return [];
+    const selectedTopics = new Set(topicIds.map(String));
+    const uniqueQuestions = new Map();
+    for (const question of window.QUIZ_MOCK_DATA.questions) {
+        if (!selectedTopics.has(String(question.topic_id))) continue;
+        const id = String(question.id);
+        if (!uniqueQuestions.has(id)) uniqueQuestions.set(id, question);
     }
-
-    return window.QUIZ_MOCK_DATA.questions.filter(
-        question =>
-            topicIds.includes(String(question.topic_id))
-    );
-
+    return Array.from(uniqueQuestions.values());
 }
 
 
@@ -622,9 +653,7 @@ function startQuiz() {
 
     if (!validateSession()) return;
 
-    const topicIds = session.selectedTopics.map(
-        topic => Number(topic.id)
-    );
+    const topicIds = [...new Set(session.selectedTopics.map(topic => Number(topic.id)))];
 
     const config = {
 
@@ -803,7 +832,7 @@ function renderQuizStage() {
                     type="button"
                     disabled
                 >
-                    Submit Answer →
+                    Submit Answer â†’
                 </button>
 
                 <button
@@ -812,7 +841,7 @@ function renderQuizStage() {
                     type="button"
                     style="display:none"
                 >
-                    Next Question →
+                    Next Question â†’
                 </button>
 
             </div>
@@ -1202,8 +1231,8 @@ function displayFeedback(feedback) {
 
         nextButton.textContent =
             currentQuestionIndex === session.questionCount - 1
-                ? "Finish Quiz ✓"
-                : "Next Question →";
+                ? "Finish Quiz âœ“"
+                : "Next Question â†’";
 
     }
 
@@ -1230,7 +1259,7 @@ function showFeedback(isCorrect, explanation) {
         <div class="feedback-heading">
 
             <span>
-                ${isCorrect ? "✓" : "✕"}
+                ${isCorrect ? "âœ“" : "âœ•"}
             </span>
 
             <strong>
@@ -1446,50 +1475,38 @@ function confirmAbandon() {
 /* ================= MOCK FINISH ================= */
 
 function finishMockQuiz(status) {
-
     if (quizStatus === "FINISHED") return;
-
     quizStatus = "FINISHED";
-
     stopMockTimer();
-
-    const correctAnswers =
-        submittedAnswers.filter(
-            answer => answer.is_correct
-        ).length;
-
-    const answeredQuestions =
-        submittedAnswers.length;
-
-    const totalQuestions =
-        quizQuestions.length;
-
+    const totalQuestions = quizQuestions.length;
+    const questionsPresented = status === "COMPLETED" ? totalQuestions : Math.min(currentQuestionIndex + 1, totalQuestions);
+    const presentedQuestions = quizQuestions.slice(0, questionsPresented);
+    const answeredQuestions = submittedAnswers.length;
+    const correctAnswers = submittedAnswers.filter(answer => answer.is_correct).length;
+    const answersById = new Map(submittedAnswers.map(answer => [String(answer.question_id), answer]));
+    const getWeight = question => {
+        const difficulty = Number(question.difficulty);
+        return [1, 2, 3].includes(difficulty) ? difficulty : 2;
+    };
+    const maxPoints = presentedQuestions.reduce((sum, question) => sum + getWeight(question), 0);
+    const earnedPoints = presentedQuestions.reduce((sum, question) => {
+        const answer = answersById.get(String(question.id));
+        return sum + (answer && answer.is_correct ? getWeight(question) : 0);
+    }, 0);
     renderFinishedScreen({
-
         status: status,
-
         total_questions: totalQuestions,
-
+        questions_presented: questionsPresented,
+        not_presented_questions: Math.max(0, totalQuestions - questionsPresented),
         answered_questions: answeredQuestions,
-
         correct_answers: correctAnswers,
-
-        unanswered_questions:
-            totalQuestions - answeredQuestions,
-
-        earned_points: correctAnswers,
-
-        max_points: totalQuestions,
-
-        score_percent:
-            totalQuestions > 0
-                ? correctAnswers / totalQuestions * 100
-                : 0,
-
+        unanswered_questions: Math.max(0, questionsPresented - answeredQuestions),
+        completion_percentage: totalQuestions > 0 ? answeredQuestions / totalQuestions * 100 : 0,
+        earned_points: earnedPoints,
+        max_points: maxPoints,
+        score_percent: maxPoints > 0 ? earnedPoints / maxPoints * 100 : 0,
         attempt_id: null
-
     });
-
 }
 
 
@@ -1535,7 +1552,7 @@ function renderFinishedScreen(result) {
         <div class="finished-card">
 
             <div class="finished-icon">
-                ${result.status === "COMPLETED" ? "✓" : "◷"}
+                ${result.status === "COMPLETED" ? "âœ“" : "â—·"}
             </div>
 
             <span class="section-tag">
@@ -1555,6 +1572,21 @@ function renderFinishedScreen(result) {
                 <div>
                     <strong>${result.total_questions}</strong>
                     <span>Total Questions</span>
+                </div>
+
+                <div>
+                    <strong>${result.questions_presented ?? 0}</strong>
+                    <span>Questions Presented</span>
+                </div>
+
+                <div>
+                    <strong>${result.not_presented_questions ?? 0}</strong>
+                    <span>Not Presented</span>
+                </div>
+
+                <div>
+                    <strong>${Number(result.completion_percentage ?? 0).toFixed(2)}%</strong>
+                    <span>Completion</span>
                 </div>
 
                 <div>
@@ -1590,7 +1622,7 @@ function renderFinishedScreen(result) {
                 class="quiz-action-button"
                 type="button"
             >
-                Back to Setup ↗
+                Back to Setup â†—
             </button>
 
         </div>

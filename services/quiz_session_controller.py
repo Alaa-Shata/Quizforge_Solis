@@ -58,9 +58,7 @@ class QuizSessionController(QObject):
 
             config = QuizConfig(
                 learner_name=config_data["learner_name"],
-                topic_ids=tuple(
-                    int(topic_id) for topic_id in config_data["topic_ids"]
-                ),
+                topic_ids=tuple(dict.fromkeys(int(topic_id) for topic_id in config_data["topic_ids"])),
                 question_count=int(config_data["question_count"]),
                 time_limit_seconds=int(config_data["time_limit_seconds"])
             )
@@ -78,6 +76,14 @@ class QuizSessionController(QObject):
                         topic_id=topic_id, active_only=True
                     )
                 )
+
+            unique_questions = {}
+
+            for question in questions:
+
+                unique_questions.setdefault(question.id, question)
+
+            questions = list(unique_questions.values())
 
             random.shuffle(questions)
 
@@ -144,6 +150,8 @@ class QuizSessionController(QObject):
                 })
             )
 
+            if len(self.service.answers) >= self.question_count:
+                self._finish_session("COMPLETED")
         except Exception as error:
             self._handle_service_error(error)
 
@@ -266,6 +274,8 @@ class QuizSessionController(QObject):
             "save_error": None,
             "total_questions": config.question_count,
             "questions_presented": presented,
+            "not_presented_questions": max(0, config.question_count - presented),
+            "completion_percentage": round(answered / config.question_count * 100, 2) if config.question_count else 0,
             "answered_questions": answered,
             "correct_answers": sum(
                 1 for answer in result.answers if answer.is_correct
