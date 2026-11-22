@@ -250,6 +250,10 @@ class QuizService:
         return self._finish("TIMED_OUT")
 
     def abandon(self):
+        # Timeout takes precedence if the deadline has already passed.
+        if self._check_timeout():
+            return self.result
+
         return self._finish("ABANDONED")
 
     def finish(self):

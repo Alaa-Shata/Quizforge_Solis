@@ -249,3 +249,59 @@ def test_database_save_failure_can_be_retried(test_db, monkeypatch):
     conn.close()
 
     controller.timer.stop()
+
+
+def test_timeout_with_unanswered_current_question(test_db):
+    db_path, topic_id = test_db
+    controller = create_controller(db_path)
+
+    received = []
+    controller.sessionFinished.connect(received.append)
+
+    start_quiz(controller, topic_id)
+
+    controller.service.clock = lambda: controller.service.deadline + 1
+    controller._update_timer()
+
+    assert len(received) == 1
+    result = json.loads(received[0])
+
+    assert result["status"] == "TIMED_OUT"
+    assert result["questions_presented"] == 1
+    assert result["answered_questions"] == 0
+    assert result["unanswered_questions"] == 1
+
+    attempt, answers = read_attempt(db_path)
+    assert attempt["status"] == "TIMED_OUT"
+    assert len(answers) == 1
+    assert answers[0]["chosen_option"] is None
+
+    controller.timer.stop()
+
+
+def test_abandon_after_deadline_is_timed_out(test_db):
+    db_path, topic_id = test_db
+    controller = create_controller(db_path)
+
+    received = []
+    controller.sessionFinished.connect(received.append)
+
+    start_quiz(controller, topic_id)
+
+    controller.service.clock = lambda: controller.service.deadline + 1
+    controller.abandonQuiz()
+
+    assert len(received) == 1
+    result = json.loads(received[0])
+
+    assert result["status"] == "TIMED_OUT"
+    assert result["questions_presented"] == 1
+    assert result["answered_questions"] == 0
+    assert result["unanswered_questions"] == 1
+
+    attempt, answers = read_attempt(db_path)
+    assert attempt["status"] == "TIMED_OUT"
+    assert len(answers) == 1
+    assert answers[0]["chosen_option"] is None
+
+    controller.timer.stop()
