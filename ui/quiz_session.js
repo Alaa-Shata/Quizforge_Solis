@@ -84,15 +84,9 @@ let currentAttemptStatus = null;
 
 function connectBackend() {
 
-    if (
-        !window.qt ||
-        !window.QWebChannel
-    ) {
-
-        initializeMockData();
-
+    if (!window.qt || !window.QWebChannel) {
+        document.body.innerHTML = '<main style="padding:40px;font-family:Arial;text-align:center"><h2>Backend Connection Unavailable</h2><p>QuizForge Preview requires the Python Backend. Please restart the Preview application.</p></main>';
         return;
-
     }
 
     new QWebChannel(
@@ -101,6 +95,11 @@ function connectBackend() {
         function (channel) {
 
             quizBridge = channel.objects.quizBridge;
+
+            if (!quizBridge) {
+                document.body.innerHTML = '<main style="padding:40px;font-family:Arial;text-align:center"><h2>Backend Connection Failed</h2><p>QuizForge could not find the quiz backend controller.</p></main>';
+                return;
+            }
 
             backendMode = true;
 
@@ -190,6 +189,7 @@ function connectBackend() {
 
 
             quizBridge.errorOccurred.connect(function (message) {
+                console.log("BACKEND ERROR RECEIVED:", message);
                 handleBackendError(message);
             });
 
@@ -537,6 +537,7 @@ function validateSession() {
 
 
 function handleBackendError(message) {
+    console.log("BACKEND ERROR RECEIVED:", message);
 
     if (String(message).toLowerCase().includes("save")) {
 
@@ -1741,6 +1742,8 @@ function escapeHTML(value) {
 
 
 /* ================= SCROLL REVEAL ================= */
+
+
 
 const revealElements =
     document.querySelectorAll(".reveal");
