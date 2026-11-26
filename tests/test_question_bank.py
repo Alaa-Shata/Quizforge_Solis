@@ -134,6 +134,23 @@ def test_question_workflow_and_edge_cases() -> None:
         assert len(service.list_questions(topic_id=1, active_only=True)) == 0
         assert len(service.list_questions(topic_id=1, active_only=False)) == 1
 
+        conn = sqlite3.connect(tmp_path / "test_quizforge.db")
+        conn.execute("INSERT INTO attempt_answers (question_id) VALUES (?)", (q1.id,))
+        conn.commit()
+        conn.close()
+        _assert_raises(
+            ValueError,
+            service.update_question,
+            q1.id,
+            topic_id=1,
+            text="Historical question must stay fixed",
+            options=("One", "Two", "Three", "Four"),
+            correct_option="A",
+            difficulty=2,
+            explanation="History review depends on the original question.",
+        )
+        assert service.list_questions(topic_id=1, active_only=False)[0].text == "What does the CIA triad stand for?"
+
         # 4. Preview & Commit Import (CSV with 1 valid row and 1 invalid row)
         csv_import_path = tmp_path / "import_sample.csv"
         with csv_import_path.open("w", encoding="utf-8-sig", newline="") as f:
@@ -181,6 +198,7 @@ def test_question_workflow_and_edge_cases() -> None:
         preview = service.preview_import(str(csv_import_path))
         assert len(preview.valid_rows) == 1
         assert len(preview.invalid_rows) == 1
+        assert tuple(preview.valid_rows[0]) == service._EXPORT_FIELDS
         inserted = service.commit_import(preview)
         assert inserted == 1
 
@@ -205,6 +223,50 @@ def test_question_workflow_and_edge_cases() -> None:
         assert "id" not in exported_json_rows[0]
 
     print("ALL M1 TESTS PASSED SUCCESSFULLY!")
+
+
+def test_import_rolls_back_new_topic_and_questions_on_database_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        database_path = tmp_path / "atomic_import.db"
+        service = _create_isolated_service(database_path)
+        conn = sqlite3.connect(database_path)
+        conn.execute(
+            """CREATE TRIGGER reject_second_import BEFORE INSERT ON questions
+               WHEN NEW.text = 'Force transaction rollback'
+               BEGIN SELECT RAISE(ABORT, 'simulated insert failure'); END;"""
+        )
+        conn.commit()
+        conn.close()
+
+        import_path = tmp_path / "atomic.csv"
+        with import_path.open("w", encoding="utf-8-sig", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(service._EXPORT_FIELDS)
+            writer.writerow([
+                "New topic", "First valid row", "A", "B", "C", "D", "A", "1", "Explanation"
+            ])
+            writer.writerow([
+                "New topic", "Force transaction rollback", "A", "B", "C", "D", "A", "1", "Explanation"
+            ])
+
+        preview = service.preview_import(str(import_path))
+        assert len(preview.valid_rows) == 2
+        try:
+            service.commit_import(preview)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("The simulated database failure should abort the import.")
+
+        conn = sqlite3.connect(database_path)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM topics WHERE name = 'New topic'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM questions WHERE text = 'First valid row'"
+        ).fetchone()[0] == 0
+        conn.close()
 
 
 if __name__ == "__main__":

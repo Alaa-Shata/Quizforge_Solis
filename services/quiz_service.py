@@ -1,72 +1,34 @@
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
-import time
+"""Quiz lifecycle orchestration; no Qt or SQL lives in this module."""
+
+from datetime import datetime, timezone
 import math
+import time
 
-from algorithms.adaptive_engine import (
-    AdaptiveEngine,
-    select_question,
-    calculate_score
+from algorithms.adaptive_engine import AdaptiveEngine, calculate_score, select_question
+from models.quiz import (
+    AnswerFeedback,
+    AnswerRecord,
+    QuizConfig,
+    QuizResult,
+    QuizSessionState,
 )
-
-
-@dataclass
-class QuizConfig:
-    learner_name: str
-    topic_ids: tuple[int, ...]
-    question_count: int
-    time_limit_seconds: int = 600
-
-
-@dataclass
-class AnswerRecord:
-    question_id: int
-    order_no: int
-    level_asked: int
-    chosen_option: Optional[str]
-    is_correct: bool
-
-
-@dataclass
-class QuizResult:
-    status: str
-    earned_points: int
-    max_points: int
-    score_percent: float
-    answers: list[AnswerRecord]
-
-
-@dataclass
-class AnswerFeedback:
-    is_correct: bool
-    correct_option: str
-    explanation: str = ""
-
-
-@dataclass
-class QuizSessionState:
-    is_active: bool = False
-    current_question_index: int = 0
-    total_questions: int = 0
-    answered_questions: int = 0
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    remaining_seconds: Optional[int] = None
+from utils.errors import ActiveSessionError, InsufficientQuestionsError, ValidationError
 
 
 class QuizService:
-
     VALID_STATUSES = {"COMPLETED", "TIMED_OUT", "ABANDONED"}
 
-    def __init__(self, clock=None):
+    def __init__(self, question_service=None, attempt_repository=None, *, clock=None):
+        self.question_service = question_service
+        self.attempt_repository = attempt_repository
+        self.clock = clock or time.monotonic
         self.config = None
         self.question_pool = []
-        self.questions = []
+        self.questions = []  # Questions actually displayed to the learner.
         self.answers = []
         self.used_question_ids = set()
         self.engine = None
-
+        self.times_used = {}
         self.current_question_index = 0
         self.is_active = False
         self.is_finished = False
@@ -74,275 +36,251 @@ class QuizService:
         self.finished_at = None
         self.deadline = None
         self.result = None
-        self.clock = clock or time.monotonic
 
-    def validate_setup(self, config: QuizConfig):
+    def validate_setup(self, config: QuizConfig) -> None:
         if not isinstance(config.learner_name, str):
-            raise ValueError("Invalid learner name.")
-
+            raise ValidationError("Enter a name between 2 and 40 characters.")
         name = config.learner_name.strip()
-
-        if not name:
-            raise ValueError("Please enter your name.")
-        if len(name) < 2:
-            raise ValueError("Name must be at least 2 characters.")
-        if len(name) > 40:
-            raise ValueError("Name cannot exceed 40 characters.")
+        if not 2 <= len(name) <= 40:
+            raise ValidationError("Enter a name between 2 and 40 characters.")
         if not config.topic_ids:
-            raise ValueError("Please select at least one topic.")
+            raise ValidationError("Select at least one topic.")
         if not 5 <= config.question_count <= 30:
-            raise ValueError("Question count must be between 5 and 30.")
-        if config.time_limit_seconds <= 0:
-            raise ValueError("Time limit must be greater than zero.")
+            raise ValidationError("Choose between 5 and 30 questions.")
+        if not 60 <= config.time_limit_seconds <= 7200:
+            raise ValidationError("Choose a time limit between 1 and 120 minutes.")
 
-    def start(self, config: QuizConfig, questions: list):
+    def _load_questions(self, config):
+        if self.question_service is None:
+            raise ValidationError("The question service is not configured.")
+        questions = []
+        for topic_id in config.topic_ids:
+            questions.extend(self.question_service.list_questions(
+                topic_id=topic_id, active_only=True
+            ))
+        unique = {question.id: question for question in questions}
+        return sorted(unique.values(), key=lambda question: question.id)
+
+    def start(self, config: QuizConfig):
         self.validate_setup(config)
-
         if self.is_active:
-            raise RuntimeError("A quiz session is already active.")
-
-        active_questions = [
-            q for q in questions
-            if getattr(q, "is_active", False)
-        ]
-
-        if len(active_questions) < config.question_count:
-            raise ValueError("Not enough active questions available.")
+            raise ActiveSessionError("A quiz session is already active.")
+        pool = self._load_questions(config)
+        active_questions = sorted(
+            {
+                q.id: q for q in pool
+                if getattr(q, "is_active", False)
+                and getattr(q, "topic_id", config.topic_ids[0]) in config.topic_ids
+            }.values(),
+            key=lambda question: question.id,
+        )
+        if len({q.id for q in active_questions}) < config.question_count:
+            raise InsufficientQuestionsError(
+                f"Only {len({q.id for q in active_questions})} active questions are available."
+            )
 
         self.config = config
-        self.question_pool = list(active_questions)
-        self.questions = []
-        self.answers = []
-        self.used_question_ids = set()
+        self.question_pool = active_questions
+        times_used = None
+        if self.attempt_repository is not None:
+            times_used = self.attempt_repository.get_question_usage_counts(
+                [q.id for q in active_questions]
+            )
+        self.times_used = dict(times_used or {})
+        self.questions, self.answers, self.used_question_ids = [], [], set()
         self.engine = AdaptiveEngine()
         self.current_question_index = 0
-
-        self.started_at = datetime.now()
+        self.started_at = datetime.now(timezone.utc).replace(microsecond=0)
         self.finished_at = None
-        self.is_active = True
-        self.is_finished = False
-        self.result = None
-
         self.deadline = self.clock() + config.time_limit_seconds
-
+        self.is_active, self.is_finished, self.result = True, False, None
         first_question = self._select_next_question()
-
         if first_question is None:
             self.is_active = False
-            raise RuntimeError("No active questions available.")
-
+            raise InsufficientQuestionsError("No active questions are available.")
         return first_question
 
     def _select_next_question(self):
         question = select_question(
-            questions=self.question_pool,
-            used_question_ids=self.used_question_ids,
-            target_level=self.engine.level
+            self.question_pool, self.used_question_ids, self.engine.level,
+            self.times_used,
         )
-
-        if question is None:
-            return None
-
-        self.questions.append(question)
-        self.used_question_ids.add(question.id)
-        self.current_question_index = len(self.questions) - 1
-
+        if question is not None:
+            self.questions.append(question)
+            self.used_question_ids.add(question.id)
+            self.current_question_index = len(self.questions) - 1
         return question
 
-    def get_remaining_seconds(self):
-        if not self.is_active:
+    def get_remaining_seconds(self) -> int:
+        if not self.is_active or self.deadline is None:
             return 0
-
-        if self.deadline is None:
-            return None
-
         remaining = self.deadline - self.clock()
-
         if remaining <= 0:
             self._finish("TIMED_OUT")
             return 0
-
         return math.ceil(remaining)
 
-    def _check_timeout(self):
+    def _check_timeout(self) -> bool:
         if not self.is_active:
             return self.is_finished
-
         if self.deadline is not None and self.clock() >= self.deadline:
             self._finish("TIMED_OUT")
             return True
-
         return False
 
     def get_current_question(self):
         if not self.is_active:
-            raise RuntimeError("No active quiz session.")
-
+            raise ActiveSessionError("No active quiz session.")
         if self._check_timeout():
-            raise RuntimeError("Quiz time has expired.")
-
-        if self.current_question_index >= len(self.questions):
-            return None
-
+            raise ActiveSessionError("Quiz time has expired.")
         return self.questions[self.current_question_index]
 
-    def submit_answer(self, chosen_option: str):
+    def submit_answer(self, chosen_option: str) -> AnswerFeedback:
         if not self.is_active:
-            raise RuntimeError("No active quiz session.")
-
+            raise ActiveSessionError("No active quiz session.")
         if self._check_timeout():
-            raise RuntimeError("Quiz time has expired.")
-
-        if self.current_question_index >= len(self.questions):
-            raise RuntimeError("There are no remaining questions.")
-
-        if not isinstance(chosen_option, str):
-            raise ValueError("Invalid answer.")
-
-        chosen_option = chosen_option.strip().upper()
-
-        if chosen_option not in ("A", "B", "C", "D"):
-            raise ValueError("Choose A, B, C, or D.")
-
-        question = self.questions[self.current_question_index]
-
+            raise ActiveSessionError("Quiz time has expired.")
+        question = self.get_current_question()
         if any(a.question_id == question.id for a in self.answers):
-            raise RuntimeError("This question has already been answered.")
-
+            raise ActiveSessionError("This answer has already been submitted.")
+        if not isinstance(chosen_option, str) or chosen_option.strip().upper() not in "ABCD" or len(chosen_option.strip()) != 1:
+            raise ValidationError("Choose A, B, C, or D.")
+        chosen_option = chosen_option.strip().upper()
         correct_option = question.correct_option.upper()
-        is_correct = chosen_option == correct_option
-
-        answer_record = AnswerRecord(
+        correct = chosen_option == correct_option
+        level_asked = int(question.difficulty)
+        self.answers.append(AnswerRecord(
             question_id=question.id,
             order_no=self.current_question_index + 1,
-            level_asked=int(question.difficulty),
+            level_asked=level_asked,
             chosen_option=chosen_option,
-            is_correct=is_correct
-        )
-
-        self.answers.append(answer_record)
-
-        # Update the adaptive engine exactly once per submitted answer.
-        self.engine.record_answer(is_correct)
-
+            is_correct=correct,
+        ))
+        next_level = self.engine.record_answer(correct)
         return AnswerFeedback(
-            is_correct=is_correct,
+            is_correct=correct,
             correct_option=correct_option,
-            explanation=getattr(question, "explanation", "")
+            chosen_option=chosen_option,
+            explanation=getattr(question, "explanation", ""),
+            earned_for_question=level_asked if correct else 0,
+            level_asked=level_asked,
+            next_target_level=next_level,
         )
 
     def next_question(self):
         if not self.is_active:
-            raise RuntimeError("No active quiz session.")
-
+            if self.is_finished:
+                return None
+            raise ActiveSessionError("No active quiz session.")
         if self._check_timeout():
-            raise RuntimeError("Quiz time has expired.")
-
-        if len(self.answers) <= self.current_question_index:
-            raise RuntimeError("Submit your answer before continuing.")
-
-        if len(self.questions) >= self.config.question_count:
             return None
-
-        return self._select_next_question()
+        if len(self.answers) <= self.current_question_index:
+            raise ActiveSessionError("Submit your answer before continuing.")
+        if len(self.questions) >= self.config.question_count:
+            self.finish()
+            return None
+        question = self._select_next_question()
+        if question is None:
+            self._finish("COMPLETED")
+        return question
 
     def finish_timeout(self):
         return self._finish("TIMED_OUT")
 
     def abandon(self):
-        # Timeout takes precedence if the deadline has already passed.
         if self._check_timeout():
             return self.result
-
         return self._finish("ABANDONED")
 
     def finish(self):
-        if len(self.questions) != self.config.question_count:
-            raise RuntimeError("The requested number of questions was not presented.")
-
-        if len(self.answers) != len(self.questions):
-            raise RuntimeError("Cannot complete a quiz with unanswered questions.")
-
+        if self.is_finished:
+            return self.result
+        if not self.is_active:
+            raise ActiveSessionError("No active quiz session.")
+        if len(self.questions) != self.config.question_count or len(self.answers) != len(self.questions):
+            raise ValidationError("Complete every question before finishing.")
         return self._finish("COMPLETED")
 
     def _finish(self, status):
         if self.is_finished:
             return self.result
-
         if not self.is_active:
-            raise RuntimeError("No active quiz session.")
-
+            raise ActiveSessionError("No active quiz session.")
         if status not in self.VALID_STATUSES:
-            raise ValueError("Invalid quiz status.")
+            raise ValidationError("Invalid quiz status.")
 
-        existing_ids = {a.question_id for a in self.answers}
-
+        recorded_ids = {answer.question_id for answer in self.answers}
         if status == "TIMED_OUT":
-            # Only questions already presented are recorded as unanswered.
-            for index, question in enumerate(self.questions):
-                if question.id not in existing_ids:
-                    self.answers.append(
-                        AnswerRecord(
-                            question_id=question.id,
-                            order_no=index + 1,
-                            level_asked=int(question.difficulty),
-                            chosen_option=None,
-                            is_correct=False
-                        )
-                    )
-
-        elif status == "ABANDONED":
-            # Record the current question only if it was presented and unanswered.
             if self.current_question_index < len(self.questions):
-                question = self.questions[self.current_question_index]
+                current = self.questions[self.current_question_index]
+                if current.id not in recorded_ids:
+                    self.answers.append(AnswerRecord(
+                        question_id=current.id,
+                        order_no=self.current_question_index + 1,
+                        level_asked=int(current.difficulty),
+                        chosen_option=None,
+                        is_correct=False,
+                    ))
+                    recorded_ids.add(current.id)
+            # Every remaining requested slot is a deterministic unanswered record.
+            while len(self.answers) < self.config.question_count:
+                question = select_question(
+                    self.question_pool, self.used_question_ids, self.engine.level,
+                    self.times_used,
+                )
+                if question is None:
+                    break
+                self.used_question_ids.add(question.id)
+                self.answers.append(AnswerRecord(
+                    question_id=question.id,
+                    order_no=len(self.answers) + 1,
+                    level_asked=int(question.difficulty),
+                    chosen_option=None,
+                    is_correct=False,
+                ))
+        elif status == "ABANDONED" and self.current_question_index < len(self.questions):
+            question = self.questions[self.current_question_index]
+            if question.id not in recorded_ids:
+                self.answers.append(AnswerRecord(
+                    question_id=question.id,
+                    order_no=self.current_question_index + 1,
+                    level_asked=int(question.difficulty),
+                    chosen_option=None,
+                    is_correct=False,
+                ))
 
-                if question.id not in existing_ids:
-                    self.answers.append(
-                        AnswerRecord(
-                            question_id=question.id,
-                            order_no=self.current_question_index + 1,
-                            level_asked=int(question.difficulty),
-                            chosen_option=None,
-                            is_correct=False
-                        )
-                    )
-
-        self.finished_at = datetime.now()
-
-        score = calculate_score(self.answers)
-
+        self.finished_at = datetime.now(timezone.utc).replace(microsecond=0)
+        score = calculate_score(tuple(self.answers))
         self.result = QuizResult(
             status=status,
             earned_points=score.earned,
             max_points=score.maximum,
-            score_percent=round(score.percentage, 2),
-            answers=self.answers.copy()
+            score_percent=score.percentage,
+            answers=tuple(self.answers),
         )
-
-        self.is_active = False
-        self.is_finished = True
-
+        self.is_active, self.is_finished = False, True
         return self.result
 
     def get_result(self):
         return self.result
 
-    def get_state(self):
+    def get_state(self) -> QuizSessionState:
         if self.is_active:
             self._check_timeout()
-
+        phase = "FINISHED" if self.is_finished else (
+            "SETUP" if self.config is None else
+            "FEEDBACK" if self.current_question_index < len(self.answers) else "QUESTION"
+        )
+        current = self.questions[self.current_question_index] if self.is_active and self.questions else None
+        submitted = sum(answer.chosen_option is not None for answer in self.answers)
         return QuizSessionState(
-            is_active=self.is_active,
-            current_question_index=self.current_question_index,
-            total_questions=(
-                self.config.question_count if self.config else 0
-            ),
-            answered_questions=sum(
-                1 for a in self.answers if a.chosen_option is not None
-            ),
-            started_at=self.started_at,
-            finished_at=self.finished_at,
-            remaining_seconds=(
-                self.get_remaining_seconds() if self.is_active else 0
-            )
+            phase=phase,
+            current_question=current,
+            requested_count=self.config.question_count if self.config else 0,
+            presented_count=len(self.questions),
+            submitted_count=submitted,
+            target_level=self.engine.level if self.engine else 2,
+            remaining_seconds=self.get_remaining_seconds() if self.is_active else 0,
+            can_submit=phase == "QUESTION",
+            can_advance=phase == "FEEDBACK",
         )

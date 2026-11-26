@@ -1,4 +1,21 @@
 from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ImportRowError:
+    row_number: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class ImportPreview:
+    source_path: str
+    source_format: str
+    valid_rows: tuple[dict[str, object], ...]
+    invalid_rows: tuple[ImportRowError, ...]
+    source_sha256: str
+
+
 @dataclass(frozen=True)
 class Question:
     id: int

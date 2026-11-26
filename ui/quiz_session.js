@@ -76,6 +76,7 @@ let quizBridge = null;
 let currentQuestion = null;
 
 let currentAttemptStatus = null;
+let answerSubmissionPending = false;
 
 
 /* ======================================================
@@ -179,7 +180,7 @@ function connectBackend() {
             });
 
 
-            quizBridge.sessionFinished.connect(function (data) {
+            quizBridge.sessionSummaryReady.connect(function (data) {
 
                 const result = JSON.parse(data);
 
@@ -187,9 +188,22 @@ function connectBackend() {
 
             });
 
+            quizBridge.sessionFinished.connect(function (data) {
+
+                const result = JSON.parse(data);
+
+                updateSaveStatus(result);
+
+            });
+
 
             quizBridge.errorOccurred.connect(function (message) {
                 console.log("BACKEND ERROR RECEIVED:", message);
+                answerSubmissionPending = false;
+                const submit = document.getElementById("submit-answer");
+                if (submit && quizStatus === "ACTIVE" && selectedAnswer) {
+                    submit.disabled = false;
+                }
                 handleBackendError(message);
             });
 
@@ -303,6 +317,12 @@ function renderTopics() {
         card.type = "button";
 
         card.className = "topic-card";
+        card.setAttribute(
+            "aria-pressed",
+            String(session.selectedTopics.some(
+                item => String(item.id) === String(topic.id)
+            ))
+        );
 
         card.dataset.topicId = topic.id;
 
@@ -325,7 +345,7 @@ function renderTopics() {
 
                 <strong>${escapeHTML(topic.name)}</strong>
 
-                <small>Select topic</small>
+                <small>${escapeHTML(describeTopic(topic))}</small>
 
             </span>
 
@@ -403,6 +423,9 @@ if (questionOptions) {
             .forEach(item => item.classList.remove("active"));
 
         button.classList.add("active");
+        questionOptions.querySelectorAll(".choice-button").forEach(item =>
+            item.setAttribute("aria-pressed", String(item === button))
+        );
 
         session.questionCount = Number(
             button.dataset.count
@@ -432,6 +455,9 @@ if (timeOptions) {
             .forEach(item => item.classList.remove("active"));
 
         button.classList.add("active");
+        timeOptions.querySelectorAll(".time-button").forEach(item =>
+            item.setAttribute("aria-pressed", String(item === button))
+        );
 
         session.timeLimitSeconds = Number(
             button.dataset.time
@@ -448,46 +474,89 @@ if (timeOptions) {
 
 /* ================= SUMMARY ================= */
 
+function getAvailableQuestionCount() {
+
+    const counts = session.selectedTopics.map(
+        topic => Number(topic.question_count)
+    );
+
+    if (counts.length === 0 || counts.some(value => !Number.isFinite(value))) {
+        return null;
+    }
+
+    return counts.reduce((sum, value) => sum + value, 0);
+
+}
+
+
 function updateSummary() {
 
-    const summaryName =
-        document.getElementById("summary-name");
-
-    const summaryTopics =
-        document.getElementById("summary-topics");
-
-    const summaryCount =
-        document.getElementById("summary-count");
-
-    const summaryTime =
-        document.getElementById("summary-time");
+    const summaryName = document.getElementById("summary-name");
+    const summaryTopics = document.getElementById("summary-topics");
+    const summaryCount = document.getElementById("summary-count");
+    const summaryTime = document.getElementById("summary-time");
+    const availability = document.getElementById("availability");
 
     if (summaryName) {
-
-        summaryName.textContent =
-            session.learnerName || "Not added yet";
-
+        summaryName.textContent = session.learnerName || "Not added yet";
     }
 
     if (summaryTopics) {
-
-        summaryTopics.textContent =
-            `${session.selectedTopics.length} topics`;
-
+        summaryTopics.textContent = session.selectedTopics.length === 0
+            ? "No topics selected"
+            : session.selectedTopics.map(topic => topic.name).join(", ");
     }
 
     if (summaryCount) {
-
-        summaryCount.textContent =
-            session.questionCount;
-
+        summaryCount.textContent = session.questionCount;
     }
 
     if (summaryTime) {
+        summaryTime.textContent = `${session.timeLimitSeconds / 60} min`;
+    }
 
-        summaryTime.textContent =
-            `${session.timeLimitSeconds / 60} min`;
+    const available = getAvailableQuestionCount();
+    let notEnough = false;
 
+    if (availability) {
+
+        availability.className = "availability";
+        availability.setAttribute("aria-live", "polite");
+
+        if (session.selectedTopics.length === 0) {
+
+            availability.textContent =
+                "Select at least one topic to see how many questions are available.";
+
+        } else if (available === null) {
+
+            availability.textContent = "";
+
+        } else if (available < session.questionCount) {
+
+            notEnough = true;
+            availability.classList.add("availability-warning");
+            availability.textContent =
+                `Only ${available} active questions are available for the selected topics. Choose fewer questions or add another topic.`;
+
+        } else {
+
+            availability.classList.add("availability-ok");
+            availability.textContent =
+                `${available} active questions available for the selected topics.`;
+
+        }
+
+    }
+
+    if (startButton) {
+        const nameLength = session.learnerName.trim().length;
+        const invalid = nameLength < 2 || nameLength > 40 ||
+            session.selectedTopics.length === 0 || notEnough || available === null;
+        startButton.disabled = invalid;
+        startButton.title = notEnough
+            ? "Not enough questions for this selection."
+            : invalid ? "Enter a valid name and choose at least one topic." : "";
     }
 
 }
@@ -531,6 +600,11 @@ function validateSession() {
 
     }
 
+    if (session.timeLimitSeconds < 60 || session.timeLimitSeconds > 7200) {
+        showError("Choose a time limit between 1 and 120 minutes.");
+        return false;
+    }
+
     return true;
 
 }
@@ -548,7 +622,8 @@ function handleBackendError(message) {
             panel.id = "retry-save-panel";
             panel.className = "finished-note";
             panel.style.marginTop = "16px";
-            quizStage.appendChild(panel);
+            const summaryCard = quizStage.querySelector('.finished-card');
+            (summaryCard || quizStage).appendChild(panel);
         }
 
         panel.innerHTML = `
@@ -813,8 +888,11 @@ function renderQuizStage() {
                     TOPIC
                 </span>
 
-                <div id="timer-display" class="timer-display">
-                    10:00
+                <div class="timer-group">
+                    <span id="timer-status" class="timer-caption">Time remaining</span>
+                    <div id="timer-display" class="timer-display" role="timer" aria-label="Time remaining">
+                        10:00
+                    </div>
                 </div>
 
             </div>
@@ -826,6 +904,7 @@ function renderQuizStage() {
             <div id="feedback-panel" class="feedback-panel"></div>
 
             <div class="quiz-actions">
+                <span class="keys-hint">Press A, B, C or D to choose, Enter to continue</span>
 
                 <button
                     id="submit-answer"
@@ -966,13 +1045,14 @@ function renderQuestion(question) {
     }
 
     selectedAnswer = null;
+    answerSubmissionPending = false;
 
     const total = backendMode
         ? session.questionCount
         : quizQuestions.length;
 
     progressText.textContent =
-        `Question ${currentQuestionIndex + 1} of ${total}`;
+        `Question ${currentQuestionIndex + 1} of ${total} · ${submittedAnswers.length} answered`;
 
     topicElement.textContent =
         (question.topic_name || "Quiz").toUpperCase();
@@ -999,6 +1079,8 @@ function renderQuestion(question) {
         `${(currentQuestionIndex / total) * 100}%`;
 
     optionsContainer.innerHTML = "";
+    optionsContainer.setAttribute("role", "radiogroup");
+    optionsContainer.setAttribute("aria-label", "Choose one answer");
 
     Object.entries(question.options).forEach(
         ([key, value]) => {
@@ -1008,6 +1090,8 @@ function renderQuestion(question) {
             button.type = "button";
 
             button.className = "answer-option";
+            button.setAttribute("role", "radio");
+            button.setAttribute("aria-checked", "false");
 
             button.dataset.answer = key;
 
@@ -1027,6 +1111,17 @@ function renderQuestion(question) {
 
                 selectAnswer(key, button);
 
+            });
+
+            button.addEventListener("keydown", function (event) {
+                if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(event.key)) return;
+                event.preventDefault();
+                const choices = [...optionsContainer.querySelectorAll('[role="radio"]')];
+                const current = choices.indexOf(button);
+                const step = ["ArrowDown", "ArrowRight"].includes(event.key) ? 1 : -1;
+                const next = choices[(current + step + choices.length) % choices.length];
+                next.focus();
+                selectAnswer(next.dataset.answer, next);
             });
 
             optionsContainer.appendChild(button);
@@ -1080,7 +1175,7 @@ function getTopicName(topicId) {
 
 function selectAnswer(answer, button) {
 
-    if (quizStatus !== "ACTIVE") return;
+    if (quizStatus !== "ACTIVE" || answerSubmissionPending) return;
 
     selectedAnswer = answer;
 
@@ -1089,10 +1184,12 @@ function selectAnswer(answer, button) {
         .forEach(option => {
 
             option.classList.remove("selected");
+            option.setAttribute("aria-checked", "false");
 
         });
 
     button.classList.add("selected");
+    button.setAttribute("aria-checked", "true");
 
     const submitButton =
         document.getElementById("submit-answer");
@@ -1112,7 +1209,7 @@ function submitAnswer() {
 
     if (
         quizStatus !== "ACTIVE" ||
-        !selectedAnswer
+        !selectedAnswer || answerSubmissionPending
     ) {
 
         return;
@@ -1120,6 +1217,10 @@ function submitAnswer() {
     }
 
     if (backendMode) {
+
+        answerSubmissionPending = true;
+        const submit = document.getElementById("submit-answer");
+        if (submit) submit.disabled = true;
 
         quizBridge.submitAnswer(selectedAnswer);
 
@@ -1163,6 +1264,8 @@ function handleBackendFeedback(feedback) {
 
     if (!currentQuestion) return;
 
+    answerSubmissionPending = false;
+
     submittedAnswers.push({
 
         question_id: currentQuestion.id,
@@ -1181,6 +1284,8 @@ function handleBackendFeedback(feedback) {
 /* ================= DISPLAY FEEDBACK ================= */
 
 function displayFeedback(feedback) {
+
+    answerSubmissionPending = false;
 
     const correctOption =
         feedback.correct_option;
@@ -1211,7 +1316,9 @@ function displayFeedback(feedback) {
 
     showFeedback(
         feedback.is_correct,
-        feedback.explanation
+        feedback.explanation,
+        correctOption,
+        currentQuestion.options?.[correctOption]
     );
 
     const submitButton =
@@ -1244,7 +1351,7 @@ function displayFeedback(feedback) {
 
 /* ================= FEEDBACK ================= */
 
-function showFeedback(isCorrect, explanation) {
+function showFeedback(isCorrect, explanation, correctOption, correctText) {
 
     const panel =
         document.getElementById("feedback-panel");
@@ -1270,6 +1377,7 @@ function showFeedback(isCorrect, explanation) {
         </div>
 
         <p>
+            Correct answer: ${escapeHTML(correctOption)}${correctText ? ` — ${escapeHTML(correctText)}` : ""}<br>
             ${escapeHTML(explanation || "No explanation is available.")}
         </p>
 
@@ -1394,6 +1502,15 @@ function updateTimerDisplay() {
 
     display.className = "timer-display";
 
+    const timerStatus = document.getElementById("timer-status");
+    if (timerStatus) {
+        timerStatus.textContent = remainingSeconds <= 10
+            ? "Critical · 10 seconds or less"
+            : remainingSeconds <= 60
+                ? "Warning · 1 minute or less"
+                : "Time remaining";
+    }
+
     if (remainingSeconds <= 10) {
 
         display.classList.add("timer-danger");
@@ -1431,10 +1548,31 @@ function showConfirmDialog() {
         modal.hidden = true;
 
         modal.classList.remove("visible");
+        modal.onkeydown = null;
 
     };
 
     cancelButton.onclick = closeModal;
+
+    cancelButton.focus();
+
+    modal.onkeydown = function (event) {
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeModal();
+            document.getElementById("abandon-quiz")?.focus();
+            return;
+        }
+        if (event.key === "Tab") {
+            const controls = [cancelButton, okButton];
+            const current = controls.indexOf(document.activeElement);
+            const next = event.shiftKey
+                ? (current <= 0 ? controls.length - 1 : current - 1)
+                : (current === controls.length - 1 ? 0 : current + 1);
+            event.preventDefault();
+            controls[next].focus();
+        }
+    };
 
     okButton.onclick = function () {
 
@@ -1542,11 +1680,13 @@ function renderFinishedScreen(result) {
 
     };
 
-    const savedMessage = result.attempt_id
-        ? `Attempt #${result.attempt_id} saved successfully.`
-        : result.save_error
-            ? "Your result could not be saved."
-            : "Preview summary only.";
+    const savedMessage = result.save_status === "saving"
+        ? "Saving your result..."
+        : result.attempt_id
+            ? `Attempt #${result.attempt_id} saved successfully.`
+            : result.save_error
+                ? "Your result could not be saved."
+                : "Preview summary only.";
 
     quizStage.innerHTML = `
 
@@ -1568,6 +1708,7 @@ function renderFinishedScreen(result) {
                 ${statusDescription[result.status] || ""}
             </p>
 
+            ${scoreHighlightHTML(result)}
             <div class="finished-stats">
 
                 <div>
@@ -1614,7 +1755,7 @@ function renderFinishedScreen(result) {
 
                 <br><br>
 
-                ${escapeHTML(savedMessage)}
+                <span id="finished-save-status">${escapeHTML(savedMessage)}</span>
 
             </div>
 
@@ -1638,6 +1779,25 @@ function renderFinishedScreen(result) {
         returnToSetup
     );
 
+}
+
+
+function updateSaveStatus(result) {
+
+    const status = document.getElementById("finished-save-status");
+
+    if (!status || !result.attempt_id) {
+        return;
+    }
+
+    status.textContent =
+        `Attempt #${result.attempt_id} saved successfully.`;
+
+    const retryPanel = document.getElementById("retry-save-panel");
+
+    if (retryPanel) {
+        retryPanel.remove();
+    }
 }
 
 
@@ -1794,3 +1954,86 @@ if ("IntersectionObserver" in window) {
 updateSummary();
 
 connectBackend();
+
+
+/* ================= M2 HELPERS (topics, score, keyboard) ================= */
+
+function describeTopic(topic) {
+
+    const count = Number(topic.question_count);
+
+    if (!Number.isFinite(count)) return "Select topic";
+
+    return count === 1 ? "1 question" : `${count} questions`;
+
+}
+
+
+function scoreHighlightHTML(result) {
+
+    const percent = Math.max(0, Math.min(100, Number(result.score_percent) || 0));
+    const tone = percent >= 70 ? "good" : percent >= 40 ? "ok" : "low";
+
+    return `
+        <div class="score-highlight score-${tone}">
+            <div
+                class="score-ring"
+                role="img"
+                aria-label="Score ${Math.round(percent)} percent"
+                style="--score:${percent}"
+            >
+                <span>${Math.round(percent)}%</span>
+            </div>
+            <div class="score-text">
+                <strong>${escapeHTML(result.earned_points)} / ${escapeHTML(result.max_points)} points</strong>
+                <small>Weighted score</small>
+            </div>
+        </div>
+    `;
+
+}
+
+
+document.addEventListener("keydown", function (event) {
+
+    if (quizStatus !== "ACTIVE") return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+    const modal = document.getElementById("confirm-modal");
+
+    if (modal && !modal.hidden) return;
+
+    const keyToLetter = { "1": "A", "2": "B", "3": "C", "4": "D" };
+    const pressed = String(event.key).toUpperCase();
+    const letter = keyToLetter[pressed] || pressed;
+
+    if (["A", "B", "C", "D"].includes(letter)) {
+
+        const option = document.querySelector(
+            `.answer-option[data-answer="${letter}"]`
+        );
+
+        if (option && !option.disabled) {
+            event.preventDefault();
+            option.click();
+        }
+
+        return;
+
+    }
+
+    // Enter on a focused button already clicks it, do not fire twice.
+    if (event.key !== "Enter" || event.target.tagName === "BUTTON") return;
+
+    const nextButton = document.getElementById("next-question");
+    const submitButton = document.getElementById("submit-answer");
+
+    if (nextButton && nextButton.style.display !== "none" && !nextButton.disabled) {
+        event.preventDefault();
+        nextButton.click();
+    } else if (submitButton && submitButton.style.display !== "none" && !submitButton.disabled) {
+        event.preventDefault();
+        submitButton.click();
+    }
+
+});

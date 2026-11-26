@@ -1,12 +1,55 @@
 from pathlib import Path
 from typing import Optional, Sequence
+from datetime import datetime, timezone
 
 from database.connection import get_connection
+from models.quiz import QuizConfig, QuizResult
+from utils.errors import PersistenceError
 
 
 class AttemptRepository:
 
     VALID_STATUSES = {"COMPLETED", "TIMED_OUT", "ABANDONED"}
+
+    def __init__(self, connection_factory=get_connection):
+        self.connection_factory = connection_factory
+
+    def save_finished_attempt(
+        self, *, config: QuizConfig, started_at: str,
+        finished_at: str, result: QuizResult,
+    ) -> int:
+        """Persist a terminal attempt and all recorded answers atomically."""
+        try:
+            return type(self).save_attempt(
+                learner_name=config.learner_name,
+                started_at=started_at,
+                finished_at=finished_at,
+                status=result.status,
+                question_count=config.question_count,
+                earned_points=result.earned_points,
+                max_points=result.max_points,
+                answers=result.answers,
+                connection_factory=self.connection_factory,
+            )
+        except Exception as exc:
+            raise PersistenceError("Could not persist the quiz attempt.") from exc
+
+    def get_question_usage_counts(self, question_ids: list[int]) -> dict[int, int]:
+        ids = list(dict.fromkeys(int(question_id) for question_id in question_ids))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        conn = self.connection_factory()
+        try:
+            rows = conn.execute(
+                f"SELECT question_id, COUNT(*) AS used FROM attempt_answers "
+                f"WHERE question_id IN ({placeholders}) GROUP BY question_id",
+                ids,
+            ).fetchall()
+            counts = {int(row["question_id"]): int(row["used"]) for row in rows}
+            return {question_id: counts.get(question_id, 0) for question_id in ids}
+        finally:
+            conn.close()
 
     @staticmethod
     def save_attempt(
@@ -18,7 +61,8 @@ class AttemptRepository:
         earned_points: int,
         max_points: int,
         answers: Sequence,
-        db_path: Optional[str | Path] = None
+        db_path: Optional[str | Path] = None,
+        connection_factory=None,
     ) -> int:
 
         status = status.upper()
@@ -28,6 +72,16 @@ class AttemptRepository:
 
         if not learner_name.strip():
             raise ValueError("Learner name cannot be empty.")
+
+        for label, value in (("started_at", started_at), ("finished_at", finished_at)):
+            try:
+                timestamp = datetime.fromisoformat(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{label} must be an ISO 8601 timestamp.") from exc
+            if timestamp.utcoffset() != timezone.utc.utcoffset(timestamp):
+                raise ValueError(f"{label} must be stored in UTC.")
+        if datetime.fromisoformat(finished_at) < datetime.fromisoformat(started_at):
+            raise ValueError("finished_at must not precede started_at.")
 
         if not 5 <= question_count <= 30:
             raise ValueError("Question count must be between 5 and 30.")
@@ -54,8 +108,14 @@ class AttemptRepository:
 
         if earned_points != expected_earned:
             raise ValueError("Earned points do not match the submitted answers.")
+        if any(a.chosen_option is None and a.is_correct for a in answers):
+            raise ValueError("An unanswered question cannot be correct.")
+        if len({a.question_id for a in answers}) != len(answers):
+            raise ValueError("An attempt cannot contain duplicate questions.")
+        if len({a.order_no for a in answers}) != len(answers):
+            raise ValueError("An attempt cannot contain duplicate answer positions.")
 
-        conn = get_connection(db_path)
+        conn = connection_factory() if connection_factory else get_connection(db_path)
 
         try:
             cursor = conn.cursor()

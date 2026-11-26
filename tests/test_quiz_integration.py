@@ -5,6 +5,8 @@ import pytest
 
 from database.connection import init_db
 from services.quiz_session_controller import QuizSessionController
+from models.quiz import AnswerRecord, QuizConfig, QuizResult
+from utils.errors import PersistenceError
 
 
 @pytest.fixture
@@ -118,8 +120,7 @@ def test_completed_weighted_quiz_is_saved(test_db):
 
     for index in range(5):
         controller.submitAnswer("A")
-        if index < 4:
-            controller.nextQuestion()
+        controller.nextQuestion()
 
     assert len(received) == 1
     result = json.loads(received[0])
@@ -168,7 +169,7 @@ def test_abandoned_quiz_saves_only_presented_questions(test_db):
     controller.timer.stop()
 
 
-def test_timed_out_quiz_saves_only_presented_questions(test_db):
+def test_timed_out_quiz_records_remaining_questions_as_unanswered(test_db):
     db_path, topic_id = test_db
     controller = create_controller(db_path)
 
@@ -187,10 +188,13 @@ def test_timed_out_quiz_saves_only_presented_questions(test_db):
     assert result["status"] == "TIMED_OUT"
     assert result["questions_presented"] == 1
     assert result["answered_questions"] == 1
+    assert result["recorded_answer_count"] == 5
+    assert result["unanswered_questions"] == 4
 
     attempt, answers = read_attempt(db_path)
     assert attempt["status"] == "TIMED_OUT"
-    assert len(answers) == 1
+    assert len(answers) == 5
+    assert len({answer["question_id"] for answer in answers}) == 5
 
     controller.timer.stop()
 
@@ -221,8 +225,7 @@ def test_database_save_failure_can_be_retried(test_db, monkeypatch):
 
     for index in range(5):
         controller.submitAnswer("A")
-        if index < 4:
-            controller.nextQuestion()
+        controller.nextQuestion()
 
     assert received == []
     assert len(errors) == 1
@@ -271,12 +274,13 @@ def test_timeout_with_unanswered_current_question(test_db):
     assert result["status"] == "TIMED_OUT"
     assert result["questions_presented"] == 1
     assert result["answered_questions"] == 0
-    assert result["unanswered_questions"] == 1
+    assert result["recorded_answer_count"] == 5
+    assert result["unanswered_questions"] == 5
 
     attempt, answers = read_attempt(db_path)
     assert attempt["status"] == "TIMED_OUT"
-    assert len(answers) == 1
-    assert answers[0]["chosen_option"] is None
+    assert len(answers) == 5
+    assert all(answer["chosen_option"] is None for answer in answers)
 
     controller.timer.stop()
 
@@ -299,11 +303,52 @@ def test_abandon_after_deadline_is_timed_out(test_db):
     assert result["status"] == "TIMED_OUT"
     assert result["questions_presented"] == 1
     assert result["answered_questions"] == 0
-    assert result["unanswered_questions"] == 1
+    assert result["recorded_answer_count"] == 5
+    assert result["unanswered_questions"] == 5
 
     attempt, answers = read_attempt(db_path)
     assert attempt["status"] == "TIMED_OUT"
-    assert len(answers) == 1
+    assert len(answers) == 5
     assert answers[0]["chosen_option"] is None
 
     controller.timer.stop()
+
+
+def test_confirmed_close_abandons_and_saves_before_exit(test_db):
+    db_path, topic_id = test_db
+    controller = create_controller(db_path)
+    start_quiz(controller, topic_id)
+    controller.submitAnswer("A")
+
+    assert controller.abandon_and_save_for_close()
+    assert controller.attempt_saved
+    attempt, answers = read_attempt(db_path)
+    assert attempt["status"] == "ABANDONED"
+    assert len(answers) == 1
+    assert answers[0]["chosen_option"] == "A"
+
+
+def test_attempt_save_rolls_back_attempt_when_answer_insert_fails(test_db):
+    db_path, topic_id = test_db
+    controller = create_controller(db_path)
+    config = QuizConfig("Rollback Tester", (topic_id,), 5, 600)
+    result = QuizResult(
+        status="ABANDONED",
+        earned_points=0,
+        max_points=2,
+        score_percent=0.0,
+        answers=(AnswerRecord(999999, 1, 2, None, False),),
+    )
+
+    with pytest.raises(PersistenceError) as error:
+        controller.attempt_repository.save_finished_attempt(
+            config=config,
+            started_at="2026-11-27T10:00:00+00:00",
+            finished_at="2026-11-27T10:01:00+00:00",
+            result=result,
+        )
+    assert isinstance(error.value.__cause__, sqlite3.IntegrityError)
+
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+    conn.close()

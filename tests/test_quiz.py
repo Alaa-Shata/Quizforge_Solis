@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from services.quiz_service import QuizService, QuizConfig
+from utils.errors import InsufficientQuestionsError, ValidationError
 
 
 def create_questions(count=5):
@@ -10,6 +11,7 @@ def create_questions(count=5):
     return [
         SimpleNamespace(
             id=i + 1,
+            topic_id=1,
             difficulty=levels[i % len(levels)],
             correct_option="A",
             explanation=f"Explanation {i + 1}",
@@ -28,9 +30,28 @@ def create_config():
     )
 
 
+class FixtureQuestionService:
+    def __init__(self, questions):
+        self.questions = list(questions)
+
+    def list_questions(self, *, topic_id=None, active_only=True, **_filters):
+        return [
+            question for question in self.questions
+            if (topic_id is None or question.topic_id == topic_id)
+            and (not active_only or question.is_active)
+        ]
+
+
+def make_service(questions=None, clock=None):
+    return QuizService(
+        FixtureQuestionService(questions if questions is not None else create_questions()),
+        clock=clock,
+    )
+
+
 def test_start_quiz():
-    service = QuizService()
-    first = service.start(create_config(), create_questions())
+    service = make_service()
+    first = service.start(create_config())
 
     assert first.difficulty == 2
     assert service.is_active
@@ -38,9 +59,25 @@ def test_start_quiz():
     assert service.get_state().total_questions == 5
 
 
+def test_setup_rejects_insufficient_pool_before_starting_session():
+    service = make_service(create_questions(4))
+    with pytest.raises(InsufficientQuestionsError):
+        service.start(create_config())
+    assert not service.is_active
+    assert service.get_state().phase == "SETUP"
+
+
+def test_time_limit_bounds_are_validated():
+    service = make_service()
+    with pytest.raises(ValidationError):
+        service.validate_setup(QuizConfig("Rawan", (1,), 5, 59))
+    with pytest.raises(ValidationError):
+        service.validate_setup(QuizConfig("Rawan", (1,), 5, 7201))
+
+
 def test_submit_correct_answer():
-    service = QuizService()
-    service.start(create_config(), create_questions())
+    service = make_service()
+    service.start(create_config())
 
     feedback = service.submit_answer("A")
 
@@ -50,24 +87,24 @@ def test_submit_correct_answer():
 
 
 def test_invalid_answer():
-    service = QuizService()
-    service.start(create_config(), create_questions())
+    service = make_service()
+    service.start(create_config())
 
     with pytest.raises(ValueError):
         service.submit_answer("X")
 
 
 def test_cannot_move_without_answering():
-    service = QuizService()
-    service.start(create_config(), create_questions())
+    service = make_service()
+    service.start(create_config())
 
     with pytest.raises(RuntimeError):
         service.next_question()
 
 
 def test_adaptive_engine_moves_to_hard_after_two_correct():
-    service = QuizService()
-    service.start(create_config(), create_questions())
+    service = make_service()
+    service.start(create_config())
 
     service.submit_answer("A")
     service.next_question()
@@ -83,13 +120,13 @@ def test_adaptive_engine_moves_to_easy_after_two_wrong():
     questions = [
         SimpleNamespace(
             id=i + 1, difficulty=2, correct_option="A",
-            explanation="", is_active=True
+            explanation="", is_active=True, topic_id=1
         )
         for i in range(5)
     ]
 
-    service = QuizService()
-    service.start(create_config(), questions)
+    service = make_service(questions)
+    service.start(create_config())
 
     service.submit_answer("B")
     service.next_question()
@@ -102,8 +139,8 @@ def test_adaptive_engine_moves_to_easy_after_two_wrong():
 
 
 def test_questions_are_not_repeated():
-    service = QuizService()
-    service.start(create_config(), create_questions())
+    service = make_service()
+    service.start(create_config())
 
     seen = {service.questions[0].id}
 
@@ -122,13 +159,13 @@ def test_weighted_scoring():
     questions = [
         SimpleNamespace(
             id=i + 1, difficulty=level, correct_option="A",
-            explanation="", is_active=True
+            explanation="", is_active=True, topic_id=1
         )
         for i, level in enumerate([1, 2, 3, 1, 2])
     ]
 
-    service = QuizService()
-    service.start(create_config(), questions)
+    service = make_service(questions)
+    service.start(create_config())
 
     for _ in range(5):
         service.submit_answer("A")
@@ -143,8 +180,8 @@ def test_weighted_scoring():
 
 def test_timer_countdown():
     current_time = [100]
-    service = QuizService(clock=lambda: current_time[0])
-    service.start(create_config(), create_questions())
+    service = make_service(clock=lambda: current_time[0])
+    service.start(create_config())
 
     assert service.get_remaining_seconds() == 60
 
@@ -152,10 +189,10 @@ def test_timer_countdown():
     assert service.get_remaining_seconds() == 40
 
 
-def test_timeout_records_only_presented_questions():
+def test_timeout_records_distinct_unanswered_questions_to_requested_count():
     current_time = [100]
-    service = QuizService(clock=lambda: current_time[0])
-    service.start(create_config(), create_questions())
+    service = make_service(clock=lambda: current_time[0])
+    service.start(create_config())
 
     service.submit_answer("A")
     service.next_question()
@@ -166,13 +203,84 @@ def test_timeout_records_only_presented_questions():
     result = service.get_result()
 
     assert result.status == "TIMED_OUT"
-    assert len(result.answers) == 2
-    assert sum(a.chosen_option is None for a in result.answers) == 1
+    assert len(result.answers) == 5
+    assert sum(a.chosen_option is None for a in result.answers) == 4
+    assert len({a.question_id for a in result.answers}) == 5
+    assert [a.order_no for a in result.answers] == [1, 2, 3, 4, 5]
+
+
+def test_timeout_at_deadline_wins_over_late_submission():
+    current_time = [10]
+    service = make_service(clock=lambda: current_time[0])
+    service.start(create_config())
+
+    current_time[0] += 60
+    with pytest.raises(RuntimeError):
+        service.submit_answer("A")
+
+    result = service.get_result()
+    assert result.status == "TIMED_OUT"
+    assert len(result.answers) == 5
+    assert all(answer.chosen_option is None for answer in result.answers)
+    assert service.finish_timeout() is result
+
+
+def test_timeout_during_feedback_preserves_submitted_answer_and_fills_rest():
+    current_time = [10]
+    service = make_service(clock=lambda: current_time[0])
+    service.start(create_config())
+    service.submit_answer("A")
+    service.next_question()
+
+    current_time[0] = service.deadline
+    result = service.finish_timeout()
+
+    assert result.status == "TIMED_OUT"
+    assert len(result.answers) == 5
+    assert result.answers[0].chosen_option == "A"
+    assert sum(answer.chosen_option is None for answer in result.answers) == 4
+    assert len({answer.question_id for answer in result.answers}) == 5
+
+
+def test_session_state_tracks_phase_and_presented_count():
+    service = make_service()
+    service.start(create_config())
+    state = service.get_state()
+    assert state.phase == "QUESTION"
+    assert state.presented_count == 1
+    assert state.can_submit
+    assert not state.can_advance
+
+    service.submit_answer("A")
+    state = service.get_state()
+    assert state.phase == "FEEDBACK"
+    assert state.submitted_count == 1
+    assert state.can_advance
+
+
+def test_nine_available_questions_finish_without_repeats():
+    config = QuizConfig("Rawan", (1,), 9, 600)
+    service = make_service(create_questions(9))
+    service.start(config)
+    seen = {service.questions[0].id}
+
+    for index in range(9):
+        service.submit_answer("A")
+        question = service.next_question()
+        if index < 8:
+            assert question is not None
+            assert question.id not in seen
+            seen.add(question.id)
+        else:
+            assert question is None
+
+    assert len(seen) == 9
+    assert service.get_result().status == "COMPLETED"
 
 
 def test_abandon_quiz():
-    service = QuizService()
-    service.start(create_config(), create_questions())
+    service = make_service()
+    service.start(create_config())
 
     service.submit_answer("A")
     result = service.abandon()
@@ -184,8 +292,8 @@ def test_abandon_quiz():
 
 
 def test_abandon_current_unanswered_question():
-    service = QuizService()
-    service.start(create_config(), create_questions())
+    service = make_service()
+    service.start(create_config())
 
     result = service.abandon()
 
@@ -195,11 +303,11 @@ def test_abandon_current_unanswered_question():
 
 
 def test_restart_after_finished_session():
-    service = QuizService()
-    service.start(create_config(), create_questions())
+    service = make_service()
+    service.start(create_config())
     service.abandon()
 
-    first = service.start(create_config(), create_questions())
+    first = service.start(create_config())
 
     assert first.difficulty == 2
     assert service.is_active

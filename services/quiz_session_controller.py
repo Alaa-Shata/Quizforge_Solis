@@ -1,12 +1,15 @@
 import json
-import random
+import logging
 
-from PySide6.QtCore import QObject, Signal, Slot, QTimer
+from PySide6.QtCore import QObject, Signal, Slot, QTimer, QCoreApplication
 
-from services.quiz_service import QuizService, QuizConfig
-from repositories.question_repository import QuestionRepository
+from services.quiz_service import QuizService
+from models.quiz import QuizConfig
+from services.question_service import QuestionService
+from database.repositories.question_repository import QuestionRepository
 from database.connection import get_connection
 from database.repositories.attempt_repository import AttemptRepository
+from utils.errors import ActiveSessionError, QuizForgeError
 
 
 class QuizSessionController(QObject):
@@ -16,41 +19,67 @@ class QuizSessionController(QObject):
     answerFeedback = Signal(str)
     questionReady = Signal(str)
     sessionFinished = Signal(str)
+    sessionSummaryReady = Signal(str)
     errorOccurred = Signal(str)
     timerUpdated = Signal(int)
+    navigationLockChanged = Signal(bool)
 
-    def __init__(self, parent=None, db_path=None):
+    def __init__(self, parent=None, db_path=None, service=None):
         super().__init__(parent)
 
         self.db_path = db_path
         self.question_repository = QuestionRepository(
             lambda: get_connection(self.db_path)
         )
-        self.service = QuizService()
+        self.attempt_repository = AttemptRepository(
+            lambda: get_connection(self.db_path)
+        )
+        self.question_service = QuestionService(self.question_repository)
+        self.service = service or QuizService(
+            self.question_service, self.attempt_repository
+        )
+        if service is not None:
+            if service.question_service is None:
+                service.question_service = self.question_service
+            if service.attempt_repository is None:
+                service.attempt_repository = self.attempt_repository
+            self.attempt_repository = service.attempt_repository
         self.question_count = 0
         self.attempt_saved = False
         self.pending_result = None
+        self._save_in_progress = False
+        self._topic_names = {}
 
         self.timer = QTimer(self)
-        self.timer.setInterval(1000)
+        self._last_remaining = None
+        self.timer.setInterval(200)
         self.timer.timeout.connect(self._update_timer)
 
     @Slot()
     def loadTopics(self):
         try:
             topics = [
-                {"id": topic_id, "name": name}
+                {
+                    "id": topic_id,
+                    "name": name,
+                    "question_count": len(
+                        self.question_repository.list_questions(
+                            topic_id=topic_id, active_only=True
+                        )
+                    )
+                }
                 for topic_id, name in self.question_repository.list_topics()
             ]
             self.topicsReady.emit(json.dumps(topics))
         except Exception as error:
-            self.errorOccurred.emit(str(error))
+            logging.exception("Could not load quiz topics")
+            self.errorOccurred.emit("Could not load available topics.")
 
     @Slot(str)
     def startQuiz(self, config_json):
         try:
             if self.pending_result is not None and not self.attempt_saved:
-                raise RuntimeError(
+                raise ActiveSessionError(
                     "Please retry saving the previous quiz result first."
                 )
 
@@ -65,39 +94,12 @@ class QuizSessionController(QObject):
 
             self.service.validate_setup(config)
 
-            if self.service.is_active:
-                raise RuntimeError("A quiz session is already active.")
-
-            questions = []
-
-            for topic_id in config.topic_ids:
-                questions.extend(
-                    self.question_repository.list_questions(
-                        topic_id=topic_id, active_only=True
-                    )
-                )
-
-            unique_questions = {}
-
-            for question in questions:
-
-                unique_questions.setdefault(question.id, question)
-
-            questions = list(unique_questions.values())
-
-            random.shuffle(questions)
-
-            if len(questions) < config.question_count:
-                raise ValueError(
-                    f"Only {len(questions)} questions are available "
-                    "for your selected topics."
-                )
-
             self.question_count = config.question_count
             self.attempt_saved = False
             self.pending_result = None
 
-            first_question = self.service.start(config, questions)
+            self._topic_names = dict(self.question_repository.list_topics())
+            first_question = self.service.start(config)
 
             self.sessionStarted.emit(
                 json.dumps({
@@ -108,25 +110,21 @@ class QuizSessionController(QObject):
             )
 
             self.timer.start()
+            self._last_remaining = None
+            self.navigationLockChanged.emit(True)
 
         except Exception as error:
-            self.errorOccurred.emit(str(error))
+            if isinstance(error, QuizForgeError):
+                self.errorOccurred.emit(str(error))
+            else:
+                logging.exception("Could not start quiz")
+                self.errorOccurred.emit("Could not start the quiz. Check your settings and try again.")
 
     def _serialize_question(self, question):
-        topics = [
-            {"id": topic_id, "name": name}
-            for topic_id, name in self.question_repository.list_topics()
-        ]
-
-        topic = next(
-            (item for item in topics if item["id"] == question.topic_id),
-            None
-        )
-
         return {
             "id": question.id,
             "topic_id": question.topic_id,
-            "topic_name": topic["name"] if topic else "Quiz",
+            "topic_name": self._topic_names.get(question.topic_id, "Quiz"),
             "text": question.text,
             "options": {
                 "A": question.option_a,
@@ -150,8 +148,6 @@ class QuizSessionController(QObject):
                 })
             )
 
-            if len(self.service.answers) >= self.question_count:
-                self._finish_session("COMPLETED")
         except Exception as error:
             self._handle_service_error(error)
 
@@ -181,7 +177,11 @@ class QuizSessionController(QObject):
             result = self.service.abandon()
             self._save_and_emit(result)
         except Exception as error:
-            self.errorOccurred.emit(str(error))
+            if isinstance(error, QuizForgeError):
+                self.errorOccurred.emit(str(error))
+            else:
+                logging.exception("Could not abandon quiz")
+                self.errorOccurred.emit("Could not save the abandoned quiz. Please retry.")
 
     def _update_timer(self):
         if not self.service.is_active:
@@ -193,7 +193,9 @@ class QuizSessionController(QObject):
         if remaining is None:
             return
 
-        self.timerUpdated.emit(remaining)
+        if remaining != self._last_remaining:
+            self.timerUpdated.emit(remaining)
+            self._last_remaining = remaining
 
         if self.service.is_finished:
             self._finish_existing_result()
@@ -229,61 +231,125 @@ class QuizSessionController(QObject):
             self.errorOccurred.emit("There is no pending result to save.")
             return
 
-        self._save_and_emit(self.pending_result)
+        self._save_and_emit(self.pending_result, is_retry=True)
 
-    def _save_and_emit(self, result):
-        if self.attempt_saved:
-            return
-
-        self.pending_result = result
-        self.timer.stop()
+    def _build_summary_payload(self, result, save_status, attempt_id=None):
         config = self.service.config
-
-        try:
-            attempt_id = AttemptRepository.save_attempt(
-                learner_name=config.learner_name,
-                started_at=self.service.started_at.isoformat(),
-                finished_at=self.service.finished_at.isoformat(),
-                status=result.status,
-                question_count=config.question_count,
-                earned_points=result.earned_points,
-                max_points=result.max_points,
-                answers=result.answers,
-                db_path=self.db_path
-            )
-
-        except Exception as error:
-            self.errorOccurred.emit(
-                "Could not save quiz result. Please retry saving. " + str(error)
-            )
-            return
-
-        self.attempt_saved = True
-        self.pending_result = None
-
         answered = sum(
             1 for answer in result.answers
             if answer.chosen_option is not None
         )
-
         presented = len(self.service.questions)
 
-        payload = {
+        return {
             "status": result.status,
             "attempt_id": attempt_id,
             "save_error": None,
+            "save_status": save_status,
             "total_questions": config.question_count,
             "questions_presented": presented,
             "not_presented_questions": max(0, config.question_count - presented),
-            "completion_percentage": round(answered / config.question_count * 100, 2) if config.question_count else 0,
+            "completion_percentage": round(
+                answered / config.question_count * 100, 2
+            ) if config.question_count else 0,
             "answered_questions": answered,
             "correct_answers": sum(
                 1 for answer in result.answers if answer.is_correct
             ),
-            "unanswered_questions": presented - answered,
+            "recorded_answer_count": len(result.answers),
+            "unanswered_questions": len(result.answers) - answered,
             "earned_points": result.earned_points,
             "max_points": result.max_points,
             "score_percent": result.score_percent
         }
 
+    def _save_and_emit(self, result, is_retry=False):
+        if self.attempt_saved or self._save_in_progress:
+            return
+
+        if is_retry:
+            if self.pending_result is None:
+                self.errorOccurred.emit("There is no pending result to save.")
+                return
+            self._save_pending_result()
+            return
+
+        # A failed save must never be retried automatically.
+        if self.pending_result is not None:
+            return
+
+        self.pending_result = result
+        self.timer.stop()
+
+        summary = self._build_summary_payload(
+            result, save_status="saving"
+        )
+        self.sessionSummaryReady.emit(json.dumps(summary))
+
+        # In the GUI, let the summary render before database I/O.
+        # In synchronous tests without a Qt event loop, save immediately.
+        if QCoreApplication.instance() is not None:
+            QTimer.singleShot(50, self._save_pending_result)
+        else:
+            self._save_pending_result()
+
+    def _save_pending_result(self):
+        if self.attempt_saved or self._save_in_progress:
+            return
+
+        if self.pending_result is None:
+            return
+
+        self._save_in_progress = True
+        result = self.pending_result
+        config = self.service.config
+
+        try:
+            attempt_id = self.attempt_repository.save_finished_attempt(
+                config=config,
+                started_at=self.service.started_at.isoformat(),
+                finished_at=self.service.finished_at.isoformat(),
+                result=result,
+            )
+        except Exception:
+            logging.exception("Could not persist quiz attempt")
+            self._save_in_progress = False
+            self.errorOccurred.emit(
+                "Could not save quiz result. Please retry saving."
+            )
+            return
+
+        self.attempt_saved = True
+        self.pending_result = None
+        self._save_in_progress = False
+
+        payload = self._build_summary_payload(
+            result,
+            save_status="saved",
+            attempt_id=attempt_id
+        )
         self.sessionFinished.emit(json.dumps(payload))
+        self.navigationLockChanged.emit(False)
+
+    def abandon_and_save_for_close(self) -> bool:
+        """Synchronously persist a confirmed close; return False on save failure."""
+        try:
+            if self.pending_result is None:
+                if self.service.is_active:
+                    self.pending_result = self.service.abandon()
+                elif self.service.is_finished:
+                    self.pending_result = self.service.get_result()
+                else:
+                    return True
+            self.timer.stop()
+            self.sessionSummaryReady.emit(json.dumps(
+                self._build_summary_payload(self.pending_result, save_status="saving")
+            ))
+            self._save_pending_result()
+            return self.attempt_saved
+        except Exception:
+            logging.exception("Could not persist quiz attempt during close")
+            self.errorOccurred.emit(
+                "Could not save quiz result. Please retry saving."
+            )
+            return False

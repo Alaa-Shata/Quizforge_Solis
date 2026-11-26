@@ -2,26 +2,11 @@ import csv
 import hashlib
 import json
 import sqlite3
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from models.question import Question
-from repositories.question_repository import QuestionRepository
-
-
-@dataclass(frozen=True)
-class ImportRowError:
-    row_number: int
-    reason: str
-
-
-@dataclass(frozen=True)
-class ImportPreview:
-    source_path: str
-    source_format: str
-    valid_rows: Tuple[Dict[str, Any], ...]
-    invalid_rows: Tuple[ImportRowError, ...]
-    source_sha256: str
+from models.question import ImportPreview, ImportRowError, Question
+from database.repositories.question_repository import QuestionRepository
+from utils.errors import NotFoundError, ValidationError
 
 
 class QuestionService:
@@ -56,7 +41,7 @@ class QuestionService:
         topics = self._repository.list_topics()
         valid_ids = {t_id for t_id, _ in topics}
         if topic_id not in valid_ids:
-            raise ValueError("Select a valid topic.")
+            raise ValidationError("Select a valid topic.")
 
     def _validate_question_payload(
         self,
@@ -73,36 +58,36 @@ class QuestionService:
 
         clean_text = self._normalize_text(text)
         if not clean_text:
-            raise ValueError("Question text is required.")
+            raise ValidationError("Question text is required.")
 
         if not isinstance(options, (tuple, list)) or len(options) != 4:
-            raise ValueError("All four options are required.")
+            raise ValidationError("All four options are required.")
 
         cleaned_opts = tuple(self._normalize_text(str(opt)) for opt in options)
         if any(not opt for opt in cleaned_opts):
-            raise ValueError("All four options are required.")
+            raise ValidationError("All four options are required.")
 
         folded_opts = [opt.casefold() for opt in cleaned_opts]
         if len(set(folded_opts)) != 4:
-            raise ValueError("Options must be different.")
+            raise ValidationError("Options must be different.")
 
         clean_correct = str(correct_option).strip().upper()
         if clean_correct not in ("A", "B", "C", "D"):
-            raise ValueError("Select one correct option (A, B, C, or D).")
+            raise ValidationError("Select one correct option (A, B, C, or D).")
 
         if isinstance(difficulty, bool) or not isinstance(difficulty, int) or difficulty not in (1, 2, 3):
-            raise ValueError("Difficulty must be 1, 2, or 3.")
+            raise ValidationError("Difficulty must be 1, 2, or 3.")
 
         clean_explanation = self._normalize_text(explanation)
         if not clean_explanation:
-            raise ValueError("Explanation is required.")
+            raise ValidationError("Explanation is required.")
 
         if self._repository.has_normalized_duplicate(
             topic_id=topic_id,
             normalized_text=clean_text,
             exclude_question_id=exclude_question_id,
         ):
-            raise ValueError("This question already exists in this topic.")
+            raise ValidationError("This question already exists in this topic.")
 
         return (
             clean_text,
@@ -118,14 +103,14 @@ class QuestionService:
     def create_topic(self, name: str) -> Tuple[int, str]:
         clean_name = self._normalize_text(name)
         if not clean_name:
-            raise ValueError("Topic name is required.")
+            raise ValidationError("Topic name is required.")
         existing = self._repository.get_topic_by_name(clean_name)
         if existing is not None:
-            raise ValueError("Topic already exists.")
+            raise ValidationError("Topic already exists.")
         try:
             return self._repository.create_topic(clean_name)
         except sqlite3.IntegrityError as exc:
-            raise ValueError("Topic already exists.") from exc
+            raise ValidationError("Topic already exists.") from exc
 
     def list_questions(
         self,
@@ -169,7 +154,7 @@ class QuestionService:
                 explanation=clean_exp,
             )
         except sqlite3.IntegrityError as exc:
-            raise ValueError("This question already exists in this topic.") from exc
+            raise ValidationError("This question already exists in this topic.") from exc
 
     def update_question(
         self,
@@ -184,10 +169,10 @@ class QuestionService:
     ) -> Question:
         existing = self._repository.get_by_id(question_id)
         if existing is None:
-            raise KeyError("Question not found.")
+            raise NotFoundError("Question not found.")
 
         if self._repository.is_referenced_by_attempts(question_id):
-            raise ValueError("Cannot edit a question that has already been used in quiz attempts.")
+            raise ValidationError("Cannot edit a question that has already been used in quiz attempts.")
 
         clean_text, clean_opts, clean_correct, clean_diff, clean_exp = self._validate_question_payload(
             topic_id=topic_id,
@@ -209,12 +194,16 @@ class QuestionService:
                 explanation=clean_exp,
             )
         except sqlite3.IntegrityError as exc:
-            raise ValueError("This question already exists in this topic.") from exc
+            if "history is immutable" in str(exc).lower():
+                raise ValidationError(
+                    "Cannot edit a question that has already been used in quiz attempts."
+                ) from exc
+            raise ValidationError("This question already exists in this topic.") from exc
 
     def deactivate_question(self, question_id: int) -> None:
         existing = self._repository.get_by_id(question_id)
         if existing is None:
-            raise KeyError("Question not found.")
+            raise NotFoundError("Question not found.")
         self._repository.deactivate_question(question_id)
 
     def _validate_import_row(
@@ -277,10 +266,12 @@ class QuestionService:
 
         seen_in_batch.add(batch_key)
         normalized_record = {
-            "topic_name": existing_topic[1] if existing_topic else self._normalize_text(raw_topic),
-            "topic_id": existing_topic[0] if existing_topic else None,
+            "topic": existing_topic[1] if existing_topic else self._normalize_text(raw_topic),
             "text": raw_text,
-            "options": (opt_a, opt_b, opt_c, opt_d),
+            "option_a": opt_a,
+            "option_b": opt_b,
+            "option_c": opt_c,
+            "option_d": opt_d,
             "correct_option": correct_option,
             "difficulty": difficulty,
             "explanation": explanation,
@@ -294,7 +285,7 @@ class QuestionService:
 
         suffix = path_obj.suffix.lower()
         if suffix not in (".csv", ".json"):
-            raise ValueError("Only CSV and JSON files are supported.")
+            raise ValidationError("Only CSV and JSON files are supported.")
 
         source_sha256 = self._compute_file_sha256(path_obj)
         topics = self._repository.list_topics()
@@ -307,13 +298,26 @@ class QuestionService:
             with path_obj.open("r", encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
                 if not reader.fieldnames:
-                    raise ValueError("CSV file is empty or missing headers.")
+                    raise ValidationError("CSV file is empty or missing headers.")
                 headers = [h.strip() for h in reader.fieldnames if h is not None]
                 if tuple(headers) != self._EXPORT_FIELDS:
-                    raise ValueError("Invalid CSV headers.")
-                for idx, row in enumerate(reader, start=2):
+                    raise ValidationError("Invalid CSV headers.")
+                for row in reader:
+                    row_number = reader.line_num
+                    if None in row:
+                        invalid_rows.append(ImportRowError(
+                            row_number, "CSV record has more fields than the header."
+                        ))
+                        continue
+                    if any(row.get(field) is None for field in self._EXPORT_FIELDS):
+                        invalid_rows.append(ImportRowError(
+                            row_number, "CSV record is missing one or more fields."
+                        ))
+                        continue
                     cleaned_row = {k.strip(): v for k, v in row.items() if k is not None}
-                    rec, err = self._validate_import_row(cleaned_row, idx, seen_in_batch, topic_map_casefold)
+                    rec, err = self._validate_import_row(
+                        cleaned_row, row_number, seen_in_batch, topic_map_casefold
+                    )
                     if err is not None:
                         invalid_rows.append(err)
                     elif rec is not None:
@@ -322,7 +326,7 @@ class QuestionService:
             with path_obj.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, list):
-                raise ValueError("JSON root must be a list of question objects.")
+                raise ValidationError("JSON root must be a list of question objects.")
             for idx, item in enumerate(data, start=1):
                 if not isinstance(item, dict):
                     invalid_rows.append(ImportRowError(idx, "Each item must be a JSON object."))
@@ -348,7 +352,7 @@ class QuestionService:
 
         current_sha = self._compute_file_sha256(path_obj)
         if current_sha != preview.source_sha256:
-            raise ValueError("Source file changed since preview. Please run preview again.")
+            raise ValidationError("Source file changed since preview. Please run preview again.")
 
         if not preview.valid_rows:
             return 0
@@ -359,36 +363,34 @@ class QuestionService:
         seen_keys: set = set()
 
         for row in preview.valid_rows:
-            topic_name = self._normalize_text(str(row["topic_name"]))
+            topic_name = self._normalize_text(str(row["topic"]))
             topic_key = topic_name.casefold()
             text = self._normalize_text(str(row["text"]))
-            options = tuple(self._normalize_text(str(o)) for o in row["options"])
+            options = tuple(self._normalize_text(str(row[field])) for field in (
+                "option_a", "option_b", "option_c", "option_d"
+            ))
             correct_option = str(row["correct_option"]).strip().upper()
             difficulty = int(row["difficulty"])
             explanation = self._normalize_text(str(row["explanation"]))
 
             if len(options) != 4 or any(not o for o in options) or len({o.casefold() for o in options}) != 4:
-                raise ValueError("Invalid options detected during commit.")
+                raise ValidationError("Invalid options detected during commit.")
             if correct_option not in ("A", "B", "C", "D") or difficulty not in (1, 2, 3) or not text or not explanation:
-                raise ValueError("Invalid question fields detected during commit.")
+                raise ValidationError("Invalid question fields detected during commit.")
 
             pair_key = (topic_key, text.casefold())
             if pair_key in seen_keys:
-                raise ValueError("Duplicate question detected during commit.")
+                raise ValidationError("Duplicate question detected during commit.")
             seen_keys.add(pair_key)
 
             topic_id = topic_map.get(topic_key)
-            if topic_id is None:
-                created_id, _ = self.create_topic(topic_name)
-                topic_id = created_id
-                topic_map[topic_key] = topic_id
-
-            if self._repository.has_normalized_duplicate(topic_id, text):
-                raise ValueError("Question already exists in this topic.")
+            if topic_id is not None and self._repository.has_normalized_duplicate(topic_id, text):
+                raise ValidationError("Question already exists in this topic.")
 
             resolved_records.append(
                 {
                     "topic_id": topic_id,
+                    "topic_name": topic_name,
                     "text": text,
                     "options": options,
                     "correct_option": correct_option,
@@ -400,12 +402,12 @@ class QuestionService:
         try:
             return self._repository.create_questions_bulk(resolved_records)
         except sqlite3.IntegrityError as exc:
-            raise ValueError("Import failed due to database constraint.") from exc
+            raise ValidationError("Import failed due to database constraint.") from exc
 
     def export_questions(self, path: str, *, format: str, filters: Optional[Dict[str, Any]] = None) -> int:
         fmt = str(format).strip().lower()
         if fmt not in ("csv", "json"):
-            raise ValueError("Export format must be 'csv' or 'json'.")
+            raise ValidationError("Export format must be 'csv' or 'json'.")
 
         flt = filters or {}
         questions = self.list_questions(
