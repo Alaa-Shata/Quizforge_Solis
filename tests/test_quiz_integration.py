@@ -157,6 +157,46 @@ def test_completed_weighted_quiz_is_saved(test_db):
     controller.timer.stop()
 
 
+def test_finished_attempt_unlocks_navigation_and_allows_a_new_learner(test_db):
+    db_path, topic_id = test_db
+    controller = create_controller(db_path)
+    started, saved, navigation, errors = [], [], [], []
+    controller.sessionStarted.connect(started.append)
+    controller.sessionFinished.connect(saved.append)
+    controller.navigationLockChanged.connect(navigation.append)
+    controller.errorOccurred.connect(errors.append)
+
+    start_quiz(controller, topic_id)
+    for index in range(5):
+        controller.submitAnswer("A")
+        if index < 4:
+            controller.nextQuestion()
+    controller.finishQuiz()
+    if not controller.attempt_saved:
+        controller._save_pending_result()
+
+    assert len(saved) == 1
+    assert navigation[-1] is False
+
+    second_config = {
+        "learner_name": "Second Learner",
+        "topic_ids": [topic_id],
+        "question_count": 5,
+        "time_limit_seconds": 600,
+    }
+    controller.startQuiz(json.dumps(second_config))
+
+    assert errors == []
+    assert len(started) == 2
+    assert controller.service.config.learner_name == "Second Learner"
+    assert navigation[-1] is True
+
+    controller.abandonQuiz()
+    if not controller.attempt_saved:
+        controller._save_pending_result()
+    controller.timer.stop()
+
+
 def test_abandoned_quiz_saves_only_presented_questions(test_db):
     db_path, topic_id = test_db
     controller = create_controller(db_path)

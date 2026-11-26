@@ -59,6 +59,35 @@ def test_start_quiz():
     assert service.get_state().total_questions == 5
 
 
+def test_selected_topics_are_balanced_in_the_question_run():
+    questions = [
+        SimpleNamespace(
+            id=topic_id * 100 + index,
+            topic_id=topic_id,
+            difficulty=(index % 3) + 1,
+            correct_option="A",
+            explanation="why",
+            is_active=True,
+        )
+        for topic_id in (1, 2, 3)
+        for index in range(6)
+    ]
+    service = make_service(questions)
+    service.start(QuizConfig("Rawan", (1, 2, 3), 9, 600))
+
+    presented_topics = []
+    for index in range(9):
+        presented_topics.append(service.get_current_question().topic_id)
+        service.submit_answer("A")
+        if index < 8:
+            service.next_question()
+
+    assert {topic_id: presented_topics.count(topic_id) for topic_id in (1, 2, 3)} == {
+        1: 3, 2: 3, 3: 3
+    }
+    service.finish()
+
+
 def test_setup_rejects_insufficient_pool_before_starting_session():
     service = make_service(create_questions(4))
     with pytest.raises(InsufficientQuestionsError):

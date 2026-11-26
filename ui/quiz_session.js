@@ -1802,6 +1802,7 @@ function renderFinishedScreen(result) {
                 id="return-to-setup"
                 class="quiz-action-button"
                 type="button"
+                ${result.save_status === "saving" ? "disabled" : ""}
             >
                 Back to Setup ↗
             </button>
@@ -1831,6 +1832,9 @@ function updateSaveStatus(result) {
 
     status.textContent =
         `Attempt #${result.attempt_id} saved successfully.`;
+
+    const returnButton = document.getElementById("return-to-setup");
+    if (returnButton) returnButton.disabled = false;
 
     const retryPanel = document.getElementById("retry-save-panel");
 

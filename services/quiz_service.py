@@ -101,9 +101,35 @@ class QuizService:
         return first_question
 
     def _select_next_question(self):
+        candidates = [
+            question for question in self.question_pool
+            if question.id not in self.used_question_ids
+        ]
+        if len(self.config.topic_ids) > 1 and candidates:
+            presented_by_topic = {
+                topic_id: sum(
+                    question.topic_id == topic_id for question in self.questions
+                )
+                for topic_id in self.config.topic_ids
+            }
+            available_topics = {
+                question.topic_id for question in candidates
+            }
+            least_represented = min(
+                presented_by_topic[topic_id]
+                for topic_id in available_topics
+            )
+            balanced_topics = {
+                topic_id for topic_id in available_topics
+                if presented_by_topic[topic_id] == least_represented
+            }
+            candidates = [
+                question for question in candidates
+                if question.topic_id in balanced_topics
+            ]
+
         question = select_question(
-            self.question_pool, self.used_question_ids, self.engine.level,
-            self.times_used,
+            candidates, set(), self.engine.level, self.times_used,
         )
         if question is not None:
             self.questions.append(question)
