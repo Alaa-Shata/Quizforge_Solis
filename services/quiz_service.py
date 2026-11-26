@@ -177,11 +177,14 @@ class QuizService:
         if len(self.answers) <= self.current_question_index:
             raise ActiveSessionError("Submit your answer before continuing.")
         if len(self.questions) >= self.config.question_count:
-            self.finish()
-            return None
+            raise ValidationError(
+                "All questions have been answered. Select Finish Quiz to view your results."
+            )
         question = self._select_next_question()
         if question is None:
-            self._finish("COMPLETED")
+            raise InsufficientQuestionsError(
+                "No additional question is available. Your submitted answers are still saved in this session."
+            )
         return question
 
     def finish_timeout(self):

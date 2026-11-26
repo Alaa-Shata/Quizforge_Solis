@@ -167,15 +167,37 @@ def test_weighted_scoring():
     service = make_service(questions)
     service.start(create_config())
 
-    for _ in range(5):
+    for index in range(5):
         service.submit_answer("A")
-        service.next_question()
+        if index < 4:
+            service.next_question()
 
+    assert service.is_active
+    assert service.get_result() is None
     result = service.finish()
 
     assert result.earned_points == 9
     assert result.max_points == 9
     assert result.score_percent == 100
+
+
+def test_last_answer_waits_for_explicit_finish_action():
+    service = make_service()
+    service.start(create_config())
+
+    for index in range(5):
+        service.submit_answer("A")
+        if index < 4:
+            service.next_question()
+
+    assert service.is_active is True
+    assert service.get_result() is None
+    with pytest.raises(ValidationError, match="Finish Quiz"):
+        service.next_question()
+
+    result = service.finish()
+    assert result.status == "COMPLETED"
+    assert service.is_finished is True
 
 
 def test_timer_countdown():
@@ -266,15 +288,16 @@ def test_nine_available_questions_finish_without_repeats():
 
     for index in range(9):
         service.submit_answer("A")
-        question = service.next_question()
         if index < 8:
+            question = service.next_question()
             assert question is not None
             assert question.id not in seen
             seen.add(question.id)
-        else:
-            assert question is None
 
     assert len(seen) == 9
+    assert service.is_active
+    assert service.get_result() is None
+    service.finish()
     assert service.get_result().status == "COMPLETED"
 
 

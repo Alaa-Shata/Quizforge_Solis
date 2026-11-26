@@ -118,9 +118,23 @@ def test_completed_weighted_quiz_is_saved(test_db):
     start_quiz(controller, topic_id)
     assert errors == []
 
+    feedback = []
+    controller.answerFeedback.connect(feedback.append)
+    final_question = None
     for index in range(5):
+        final_question = controller.service.get_current_question()
         controller.submitAnswer("A")
-        controller.nextQuestion()
+        if index < 4:
+            controller.nextQuestion()
+
+    assert len(feedback) == 5
+    assert json.loads(feedback[-1])["correct_option"] == final_question.correct_option
+    assert received == []
+    assert controller.service.is_active
+    controller.nextQuestion()
+    assert received == []
+    assert "Finish Quiz" in errors[-1]
+    controller.finishQuiz()
 
     assert len(received) == 1
     result = json.loads(received[0])
@@ -225,7 +239,12 @@ def test_database_save_failure_can_be_retried(test_db, monkeypatch):
 
     for index in range(5):
         controller.submitAnswer("A")
-        controller.nextQuestion()
+        if index < 4:
+            controller.nextQuestion()
+
+    assert received == []
+    assert controller.service.is_active
+    controller.finishQuiz()
 
     assert received == []
     assert len(errors) == 1

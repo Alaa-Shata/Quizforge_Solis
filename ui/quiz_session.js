@@ -904,7 +904,7 @@ function renderQuizStage() {
             <div id="feedback-panel" class="feedback-panel"></div>
 
             <div class="quiz-actions">
-                <span class="keys-hint">Press A, B, C or D to choose, Enter to continue</span>
+                <span class="keys-hint">Press A, B, C or D to choose · Enter to submit, continue, or finish</span>
 
                 <button
                     id="submit-answer"
@@ -922,6 +922,15 @@ function renderQuizStage() {
                     style="display:none"
                 >
                     Next Question →
+                </button>
+
+                <button
+                    id="finish-quiz"
+                    class="quiz-action-button finish-quiz-button"
+                    type="button"
+                    style="display:none"
+                >
+                    Finish Quiz ✓
                 </button>
 
             </div>
@@ -945,6 +954,10 @@ function renderQuizStage() {
     document
         .getElementById("next-question")
         .addEventListener("click", nextQuestion);
+
+    document
+        .getElementById("finish-quiz")
+        .addEventListener("click", finishQuiz);
 
 }
 
@@ -1031,13 +1044,17 @@ function renderQuestion(question) {
     const nextButton =
         document.getElementById("next-question");
 
+    const finishButton =
+        document.getElementById("finish-quiz");
+
     if (
         !progressText ||
         !topicElement ||
         !questionText ||
         !optionsContainer ||
         !submitButton ||
-        !nextButton
+        !nextButton ||
+        !finishButton
     ) {
 
         return;
@@ -1138,6 +1155,7 @@ function renderQuestion(question) {
     submitButton.disabled = true;
 
     nextButton.style.display = "none";
+    finishButton.style.display = "none";
 
     updateTimerDisplay();
 
@@ -1327,21 +1345,28 @@ function displayFeedback(feedback) {
     const nextButton =
         document.getElementById("next-question");
 
+    const finishButton =
+        document.getElementById("finish-quiz");
+
     if (submitButton) {
 
         submitButton.style.display = "none";
 
     }
 
-    if (nextButton) {
-
+    if (currentQuestionIndex === session.questionCount - 1) {
+        if (nextButton) nextButton.style.display = "none";
+        if (finishButton) finishButton.style.display = "flex";
+        const feedbackPanel = document.getElementById("feedback-panel");
+        if (feedbackPanel) {
+            const finishNote = document.createElement("p");
+            finishNote.className = "finish-reminder";
+            finishNote.setAttribute("role", "status");
+            finishNote.textContent = "Last question answered. Review the feedback, then choose Finish Quiz to see your result.";
+            feedbackPanel.appendChild(finishNote);
+        }
+    } else if (nextButton) {
         nextButton.style.display = "flex";
-
-        nextButton.textContent =
-            currentQuestionIndex === session.questionCount - 1
-                ? "Finish Quiz ✓"
-                : "Next Question →";
-
     }
 
     updateProgress();
@@ -1430,6 +1455,20 @@ function nextQuestion() {
     }
 
     showMockQuestion();
+
+}
+
+
+function finishQuiz() {
+
+    if (quizStatus !== "ACTIVE") return;
+
+    if (backendMode) {
+        quizBridge.finishQuiz();
+        return;
+    }
+
+    finishMockQuiz("COMPLETED");
 
 }
 
@@ -2026,9 +2065,13 @@ document.addEventListener("keydown", function (event) {
     if (event.key !== "Enter" || event.target.tagName === "BUTTON") return;
 
     const nextButton = document.getElementById("next-question");
+    const finishButton = document.getElementById("finish-quiz");
     const submitButton = document.getElementById("submit-answer");
 
-    if (nextButton && nextButton.style.display !== "none" && !nextButton.disabled) {
+    if (finishButton && finishButton.style.display !== "none" && !finishButton.disabled) {
+        event.preventDefault();
+        finishButton.click();
+    } else if (nextButton && nextButton.style.display !== "none" && !nextButton.disabled) {
         event.preventDefault();
         nextButton.click();
     } else if (submitButton && submitButton.style.display !== "none" && !submitButton.disabled) {

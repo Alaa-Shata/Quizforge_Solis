@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -37,6 +38,14 @@ def build_bank(db_path):
     return db_path, topic_ids
 
 
+def test_final_question_uses_a_separate_explicit_finish_action():
+    script = Path("ui/quiz_session.js").read_text(encoding="utf-8")
+    assert 'id="finish-quiz"' in script
+    assert '.addEventListener("click", finishQuiz)' in script
+    assert "Last question answered. Review the feedback" in script
+    assert "quizBridge.finishQuiz()" in script
+
+
 @pytest.fixture
 def bank(tmp_path):
     return build_bank(tmp_path / "m2_fixes.db")
@@ -62,11 +71,11 @@ def run_quiz(db_path, topic_ids, count=10, answers="A"):
 
     for index in range(count):
         controller.submitAnswer(answers)
-
-        controller.nextQuestion()
         if index < count - 1:
+            controller.nextQuestion()
             questions.append(json.loads(asked[-1])["question"])
 
+    controller.finishQuiz()
     controller.timer.stop()
     assert errors == []
     return questions
@@ -118,7 +127,11 @@ def test_retry_save_saves_once_and_never_auto_retries(bank, monkeypatch):
 
     for index in range(5):
         controller.submitAnswer("A")
-        controller.nextQuestion()
+        if index < 4:
+            controller.nextQuestion()
+
+    assert finished == []
+    controller.finishQuiz()
 
     # First save failed: nothing stored, no automatic second attempt.
     assert len(errors) == 1

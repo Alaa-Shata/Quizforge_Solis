@@ -157,7 +157,10 @@ class QuizSessionController(QObject):
             question = self.service.next_question()
 
             if question is None:
-                self._finish_session("COMPLETED")
+                if self.service.is_finished:
+                    self._finish_existing_result()
+                else:
+                    self.errorOccurred.emit("No next question is available.")
                 return
 
             self.questionReady.emit(
@@ -168,6 +171,15 @@ class QuizSessionController(QObject):
                 })
             )
 
+        except Exception as error:
+            self._handle_service_error(error)
+
+    @Slot()
+    def finishQuiz(self):
+        """Finish only after the learner explicitly chooses Finish Quiz."""
+        try:
+            result = self.service.finish()
+            self._save_and_emit(result)
         except Exception as error:
             self._handle_service_error(error)
 
@@ -205,16 +217,6 @@ class QuizSessionController(QObject):
             self._finish_existing_result()
         else:
             self.errorOccurred.emit(str(error))
-
-    def _finish_session(self, status):
-        if status == "COMPLETED":
-            result = self.service.finish()
-        elif status == "TIMED_OUT":
-            result = self.service.finish_timeout()
-        else:
-            result = self.service.abandon()
-
-        self._save_and_emit(result)
 
     def _finish_existing_result(self):
         result = self.service.get_result()
