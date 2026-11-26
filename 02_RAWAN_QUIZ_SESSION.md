@@ -167,7 +167,7 @@ class QuizService:
 
 **Additional integration questions to resolve, not new APIs to invent:**
 
-1. How does the UI finish a normally completed attempt and retrieve `QuizResult`? The foundation has `next_question() -> Question | None`, but no `finish_completed()` or `get_result()` method. **Propose `get_result() -> QuizResult | None`**, or an agreed signal/result field, and freeze it before coding.
+1. **Resolved in the implementation baseline:** normal completion uses the explicit `finish() -> QuizResult` service action after final-answer feedback is shown; `get_result() -> QuizResult | None` returns the cached result. `next_question()` never finalizes a completed quiz.
 2. Where is the requested time limit tracked: service-owned monotonic deadline, or UI-owned QTimer? **Recommended TEAM DECISION:** service owns a monotonic deadline and exposes remaining time; QTimer only refreshes the UI. This prevents timer reset by a stalled event loop.
 3. Does `start()` need to return a `Question` even when the pool becomes unavailable between setup validation and start? **Recommended:** service revalidates and raises `InsufficientQuestionsError` before changing session state.
 4. Does `QuestionService.list_questions` return only active questions in selected topics, or does QuizService filter from the complete active list? **Recommended:** call approved list API and filter by `config.topic_ids` in QuizService; use repository-backed usage counts for deterministic selection.
@@ -627,7 +627,7 @@ Request review from at least one teammate. Do not merge until integration owner 
 
 ## V2 cross-file contract reconciliation (implementation baseline; team review pending)
 
-**V2 module-specific implementation:** `QuizService` exposes `get_result() -> QuizResult | None`; `next_question()` finalizes and returns None when done. The repository saves attempts atomically and provides historical usage counts. Use shared `init_db()`/`get_connection()` and only `data/quizforge.db`. Service owns a monotonic deadline, timeout wins over late Submit, and terminal results are cached. Timeout creates distinct deterministic unanswered records up to the requested count without streak updates; abandon records submitted answers plus the current unanswered question only. Save actual selected `Question.difficulty` as `level_asked`. DTOs are frozen and shared from canonical model files. These are project implementation choices, not instructor rules; team review remains pending.
+**V2 module-specific implementation:** `QuizService` exposes `finish() -> QuizResult` and `get_result() -> QuizResult | None`; `next_question()` advances only and never finalizes a completed quiz. The final answer feedback stays visible until the learner selects Finish Quiz. The repository saves attempts atomically and provides historical usage counts. Use shared `init_db()`/`get_connection()` and only `data/quizforge.db`. Service owns a monotonic deadline, timeout wins over late Submit, and terminal results are cached. Timeout creates distinct deterministic unanswered records up to the requested count without streak updates; abandon records submitted answers plus the current unanswered question only. Save actual selected `Question.difficulty` as `level_asked`. DTOs are frozen and shared from canonical model files. These are project implementation choices, not instructor rules; team review remains pending.
 
 
 
@@ -687,6 +687,7 @@ validate_setup(config: QuizConfig) -> None
 start(config: QuizConfig) -> Question
 submit_answer(chosen_option: str) -> AnswerFeedback
 next_question() -> Question | None
+finish() -> QuizResult
 finish_timeout() -> QuizResult
 abandon() -> QuizResult
 get_state() -> QuizSessionState
