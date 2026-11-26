@@ -1747,6 +1747,17 @@ function renderFinishedScreen(result) {
                 ${statusDescription[result.status] || ""}
             </p>
 
+            <div class="finished-return">
+                <button
+                    id="return-to-setup"
+                    class="quiz-action-button"
+                    type="button"
+                    ${result.save_status === "saving" ? "disabled" : ""}
+                >
+                    ${result.save_status === "saving" ? "Saving result…" : "Back to Setup ↩"}
+                </button>
+            </div>
+
             ${scoreHighlightHTML(result)}
             <div class="finished-stats">
 
@@ -1798,15 +1809,6 @@ function renderFinishedScreen(result) {
 
             </div>
 
-            <button
-                id="return-to-setup"
-                class="quiz-action-button"
-                type="button"
-                ${result.save_status === "saving" ? "disabled" : ""}
-            >
-                Back to Setup ↗
-            </button>
-
         </div>
 
     `;
@@ -1834,7 +1836,10 @@ function updateSaveStatus(result) {
         `Attempt #${result.attempt_id} saved successfully.`;
 
     const returnButton = document.getElementById("return-to-setup");
-    if (returnButton) returnButton.disabled = false;
+    if (returnButton) {
+        returnButton.disabled = false;
+        returnButton.textContent = "Back to Setup ↩";
+    }
 
     const retryPanel = document.getElementById("retry-save-panel");
 

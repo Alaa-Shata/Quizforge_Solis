@@ -46,6 +46,15 @@ def test_final_question_uses_a_separate_explicit_finish_action():
     assert "quizBridge.finishQuiz()" in script
 
 
+def test_return_to_setup_is_prominent_and_waits_for_saved_result():
+    script = Path("ui/quiz_session.js").read_text(encoding="utf-8")
+    result_screen = script[script.index("function renderFinishedScreen"):]
+    assert 'class="finished-return"' in result_screen
+    assert result_screen.index('id="return-to-setup"') < result_screen.index("scoreHighlightHTML(result)")
+    assert 'result.save_status === "saving" ? "disabled" : ""' in result_screen
+    assert "returnButton.disabled = false" in result_screen
+
+
 @pytest.fixture
 def bank(tmp_path):
     return build_bank(tmp_path / "m2_fixes.db")
