@@ -1,20 +1,18 @@
 # Virtual Environment
 venv/
 .venv/
-
 # Python Cache
 __pycache__/
 *.py[cod]
-
 # Testing
 .pytest_cache/
-
 # Environment Variables
 .env
-
 # IDE
 .vscode/
-.idea/data/*.db
+.idea/
+# Local database
+data/*.db
 data/quizforge.db
 data/*.sqlite
 data/*.sqlite3
