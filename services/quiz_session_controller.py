@@ -1,7 +1,7 @@
 import json
 import logging
 
-from PySide6.QtCore import QObject, Signal, Slot, QTimer, QCoreApplication
+from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 from services.quiz_service import QuizService
 from models.quiz import QuizConfig
@@ -288,12 +288,8 @@ class QuizSessionController(QObject):
         )
         self.sessionSummaryReady.emit(json.dumps(summary))
 
-        # In the GUI, let the summary render before database I/O.
-        # In synchronous tests without a Qt event loop, save immediately.
-        if QCoreApplication.instance() is not None:
-            QTimer.singleShot(50, self._save_pending_result)
-        else:
-            self._save_pending_result()
+        # Save synchronously to preserve QWebChannel signal delivery.
+        self._save_pending_result()
 
     def _save_pending_result(self):
         if self.attempt_saved or self._save_in_progress:
