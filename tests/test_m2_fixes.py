@@ -51,8 +51,14 @@ def test_return_to_setup_is_prominent_and_waits_for_saved_result():
     result_screen = script[script.index("function renderFinishedScreen"):]
     assert 'class="finished-return"' in result_screen
     assert result_screen.index('id="return-to-setup"') < result_screen.index("scoreHighlightHTML(result)")
+    assert "Return to Quiz Setup" in result_screen
     assert 'result.save_status === "saving" ? "disabled" : ""' in result_screen
     assert "returnButton.disabled = false" in result_screen
+    return_handler = script[script.index("function returnToSetup()"):]
+    assert 'document.body.classList.remove("quiz-active")' in return_handler
+    assert 'document.body.classList.add("focus-mode")' in return_handler
+    assert "setupLayout.hidden = false" in return_handler
+    assert "quizStage.hidden = true" in return_handler
 
 
 def test_save_completion_is_cached_if_it_arrives_before_the_result_screen():

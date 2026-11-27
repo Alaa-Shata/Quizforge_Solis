@@ -1763,7 +1763,7 @@ function renderFinishedScreen(result) {
                     type="button"
                     ${result.save_status === "saving" ? "disabled" : ""}
                 >
-                    ${result.save_status === "saving" ? "Saving result…" : "Back to Setup ↩"}
+                    ${result.save_status === "saving" ? "Saving result…" : "Return to Quiz Setup ↩"}
                 </button>
             </div>
 
@@ -1852,7 +1852,7 @@ function updateSaveStatus(result) {
     const returnButton = document.getElementById("return-to-setup");
     if (returnButton) {
         returnButton.disabled = false;
-        returnButton.textContent = "Back to Setup ↩";
+        returnButton.textContent = "Return to Quiz Setup ↩";
     }
 
     const retryPanel = document.getElementById("retry-save-panel");
@@ -1870,6 +1870,12 @@ function returnToSetup() {
     stopMockTimer();
 
     quizStatus = "SETUP";
+
+    // Restore the embedded M2 setup view after leaving the finished summary.
+    // Keep the focused quiz page active even when this page was opened without
+    // the desktop shell's navigation handler.
+    document.body.classList.remove("quiz-active");
+    document.body.classList.add("focus-mode");
 
     currentQuestionIndex = 0;
 
@@ -1891,10 +1897,14 @@ function returnToSetup() {
 
     }
 
-    document.body.classList.remove("quiz-active");
+    if (setupLayout) {
+        setupLayout.hidden = false;
+        setupLayout.style.display = "";
+    }
 
     if (quizSection) {
 
+        quizSection.hidden = false;
         quizSection.style.display = "";
 
         quizSection.style.visibility = "";
