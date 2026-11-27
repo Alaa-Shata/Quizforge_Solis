@@ -77,6 +77,7 @@ let currentQuestion = null;
 
 let currentAttemptStatus = null;
 let answerSubmissionPending = false;
+let completedSaveResult = null;
 
 
 /* ======================================================
@@ -131,6 +132,8 @@ function connectBackend() {
             quizBridge.sessionStarted.connect(function (data) {
 
                 const result = JSON.parse(data);
+
+                completedSaveResult = null;
 
                 quizQuestions = [];
 
@@ -191,6 +194,10 @@ function connectBackend() {
             quizBridge.sessionFinished.connect(function (data) {
 
                 const result = JSON.parse(data);
+
+                // QWebChannel may deliver the save completion before the
+                // summary DOM has been rendered; keep it for the render path.
+                completedSaveResult = result;
 
                 updateSaveStatus(result);
 
@@ -728,6 +735,8 @@ function startQuiz() {
     clearError();
 
     if (!validateSession()) return;
+
+    completedSaveResult = null;
 
     const topicIds = [...new Set(session.selectedTopics.map(topic => Number(topic.id)))];
 
@@ -1820,6 +1829,11 @@ function renderFinishedScreen(result) {
         "click",
         returnToSetup
     );
+
+    // Apply a save signal that arrived before this result screen existed.
+    if (completedSaveResult?.attempt_id) {
+        updateSaveStatus(completedSaveResult);
+    }
 
 }
 

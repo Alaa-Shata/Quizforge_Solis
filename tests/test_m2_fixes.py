@@ -55,6 +55,17 @@ def test_return_to_setup_is_prominent_and_waits_for_saved_result():
     assert "returnButton.disabled = false" in result_screen
 
 
+def test_save_completion_is_cached_if_it_arrives_before_the_result_screen():
+    script = Path("ui/quiz_session.js").read_text(encoding="utf-8")
+    received = script.index("completedSaveResult = result;")
+    immediate_update = script.index("updateSaveStatus(result);", received)
+    render = script.index("function renderFinishedScreen")
+    cached_update = script.index(
+        "if (completedSaveResult?.attempt_id)", render
+    )
+    assert received < immediate_update < render < cached_update
+
+
 @pytest.fixture
 def bank(tmp_path):
     return build_bank(tmp_path / "m2_fixes.db")
