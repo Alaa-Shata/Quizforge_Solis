@@ -12,7 +12,7 @@ class QuizSessionPreview(QMainWindow):
         self.setWindowTitle("QuizForge | Quiz Session Preview")
         self.resize(1280, 850)
 
-        self.session_page = QuizSessionPage(self)
+        self.session_page = QuizSessionPage(parent=self)
         self.setCentralWidget(self.session_page)
 
 

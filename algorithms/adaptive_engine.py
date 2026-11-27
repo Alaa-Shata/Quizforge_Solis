@@ -1,4 +1,4 @@
-﻿"""Module 3 - Adaptive Engine & Weighted Scoring (owner: Alaa).
+"""Module 3 - Adaptive Engine & Weighted Scoring (owner: Alaa).
 
 Pure Python: no Qt, no database. Safe to import from QuizService or tests.
 
